@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Claude Config Monitor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --bg:#EEF0F3; --panel:#FFFFFF; --panel2:#F6F7F9; --line:#E0E3E8; --line2:#E3E5E9;
+    --fg:#15171C; --fg2:#3A3D45; --mut:#6B7077; --mut2:#9AA0A8; --mut3:#AEB3BB;
+    --accent:#2B5CE6; --ok:#1F7A4D; --okbg:rgba(31,122,77,.13);
+    --warn:#B45309; --warnbg:rgba(180,83,9,.13); --del:#C0392B; --delbg:rgba(192,57,43,.10);
+    --sans:'IBM Plex Sans','Segoe UI',system-ui,sans-serif;
+    --mono:'IBM Plex Mono','Cascadia Code',Consolas,ui-monospace,monospace;
+    --desc-lines:4;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{background:var(--bg);color:var(--fg);font:14px/1.5 var(--sans);-webkit-font-smoothing:antialiased}
+  button,input,select{font-family:inherit}
+  ::-webkit-scrollbar{width:11px;height:11px}
+  ::-webkit-scrollbar-thumb{background:#D2D6DC;border:3px solid var(--bg);border-radius:8px}
+  ::-webkit-scrollbar-thumb:hover{background:#BFC4CC}
+  @keyframes cmPulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.78)}}
+  @keyframes cmFade{from{opacity:0;transform:translate(-50%,8px)}to{opacity:1;transform:translate(-50%,0)}}
+
+  /* inline 위젯은 고정 높이(호스트 auto-resize 가 html max-content 를 측정 -> 이 높이를 iframe 에 적용).
+     fullscreen 모드(requestDisplayMode)에서는 호스트가 큰 iframe 을 주므로 100vh 로 채운다. */
+  .app{height:660px;display:flex;flex-direction:column;overflow:hidden}
+  .app.fullscreen{height:100vh}
+
+  /* header */
+  header{display:flex;align-items:center;gap:18px;padding:12px 22px;border-bottom:1px solid var(--line);
+    background:var(--panel);flex:0 0 auto}
+  .brand{display:flex;align-items:center;gap:11px}
+  .logo{width:28px;height:28px;border-radius:6px;background:#15171C;display:flex;align-items:center;
+    justify-content:center;flex:0 0 auto}
+  .logo i{width:11px;height:11px;border-radius:2px;background:var(--accent);display:block}
+  .title{font-family:var(--mono);font-size:13.5px;font-weight:600;letter-spacing:.02em;line-height:1.1}
+  .subtitle{font-family:var(--mono);font-size:10.5px;color:var(--mut2);margin-top:2px}
+  .hbtns{margin-left:auto;display:flex;align-items:center;gap:6px;flex-shrink:0}
+  button{background:var(--panel);color:var(--fg2);border:1px solid #DDE0E5;border-radius:6px;
+    padding:7px 14px;font-size:13px;font-weight:500;white-space:nowrap;cursor:pointer}
+  button:hover{border-color:#C3C8D0;background:#F7F8FA}
+  button.primary{background:#15171C;color:#fff;border-color:#15171C}
+  button.primary:hover{background:#2A2D35}
+  /* header icon buttons (34x34, tooltip=원래 라벨). 좁은 창모드에서 텍스트 잘림 방지. */
+  .hbtns button{width:34px;height:34px;padding:0;display:inline-flex;align-items:center;justify-content:center;
+    border:1px solid #DDE0E5;border-radius:6px;background:var(--panel);color:#3A3D45;flex:0 0 auto}
+  .hbtns button:hover{background:#F7F8FA;border-color:#C3C8D0;color:#15171C}
+  .hbtns button svg{display:block;pointer-events:none}
+  .hbtns .blabel{display:none}
+  .hbtns button.primary{background:#15171C;color:#fff;border-color:#15171C}
+  .hbtns button.primary:hover{background:#2A2D35;border-color:#2A2D35;color:#fff}
+  /* 전체화면 버튼 앞 구분선 — 버튼과 함께 자동으로 숨겨지도록 ::before 로. */
+  .hbtns #fullscreen{position:relative;margin-left:3px}
+  .hbtns #fullscreen::before{content:"";position:absolute;left:-4px;top:50%;transform:translateY(-50%);
+    width:1px;height:20px;background:#E0E3E8}
+  .wbtn{gap:0}
+  .wdot{width:9px;height:9px;border-radius:50%;background:#C3C8D0;flex:0 0 auto}
+  .wdot.on{background:var(--ok);animation:cmPulse 1.6s ease-in-out infinite}
+
+  main{flex:1 1 auto;min-height:0;display:flex}
+  .left{flex:1 1 auto;min-width:0;overflow:auto;padding:20px 22px 44px}
+  .seclabel{display:flex;align-items:baseline;gap:11px;margin:0 0 12px}
+  .seclabel.mt{margin-top:30px}
+  .seclabel .t{font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--mut);font-weight:600}
+  .seclabel .h{font-family:var(--mono);font-size:11px;color:var(--mut2)}
+
+  /* tracked file rows */
+  .files{display:flex;flex-direction:column;gap:8px}
+  .file{display:flex;align-items:center;gap:12px;padding:12px 13px;border:1px solid var(--line2);
+    border-radius:6px;background:var(--panel);cursor:pointer;transition:box-shadow .12s,border-color .12s}
+  .file:hover{border-color:#C3C8D0}
+  .file.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+  .file .fmeta{min-width:0;flex:1}
+  .file .fname{font-family:var(--mono);font-size:12.5px;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .file .fdir{font-family:var(--mono);font-size:11px;color:var(--mut2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .file .chev{color:#C3C8D0;font-size:16px;flex:0 0 auto}
+  .fbadge{font-size:10.5px;font-weight:600;padding:2px 8px;border-radius:4px;white-space:nowrap;flex:0 0 auto;
+    background:#E6E8EC;color:var(--mut)}
+  .fbadge.modified{background:var(--warnbg);color:var(--warn)}
+  .fbadge.new{background:var(--okbg);color:var(--ok)}
+  .fbadge.deleted{background:var(--delbg);color:var(--del)}
+
+  /* config sections (collapsible) */
+  .sec{border:1px solid var(--line);border-radius:7px;background:var(--panel);margin-bottom:11px;overflow:hidden}
+  .sechead{padding:12px 14px;cursor:pointer}
+  .secrow{display:flex;align-items:center;gap:11px}
+  .chev2{display:inline-block;transition:transform .15s;color:var(--mut2);font-size:10px;flex:0 0 auto}
+  .sec.collapsed .chev2{transform:rotate(-90deg)}
+  .sectitle{font-size:13px;font-weight:600}
+  .seccount{font-family:var(--mono);font-size:11px;color:var(--mut);background:#E6E8EC;padding:1px 7px;
+    border-radius:4px;flex:0 0 auto}
+  .secsrc{display:flex;gap:6px;align-items:baseline;margin-top:6px;padding-left:21px}
+  .secsrc .lbl{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut3);font-weight:600;flex:0 0 auto}
+  .secsrc .val{font-family:var(--mono);font-size:11px;color:#7E848C;word-break:break-all}
+  .secbody{background:var(--panel2);border-top:1px solid #E6E8EC;padding:12px 13px;
+    display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px;align-items:start}
+  .sec.collapsed .secbody{display:none}
+
+  .card{background:var(--panel);border:1px solid var(--line2);border-radius:6px;padding:12px 13px}
+  .cname{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+  .cname .nm{font-weight:600;font-size:13px;word-break:break-all}
+  .badge{font-size:10px;font-weight:600;padding:2px 7px;border-radius:4px;white-space:nowrap;background:#E6E8EC;color:var(--mut)}
+  .badge.ok{background:var(--okbg);color:var(--ok)}
+  .kv{display:flex;gap:11px;font-size:12px;margin-top:6px}
+  .kv .k{font-size:10px;text-transform:uppercase;letter-spacing:.05em;font-weight:600;color:#8A9099;
+    min-width:60px;flex:0 0 auto;padding-top:1px}
+  .kv .v{color:var(--fg2);flex:1;min-width:0}
+  /* 코드형(command/args/env/path/tools 등): mono, 단어 경계 우선 줄바꿈(break-all 금지). */
+  .kv .v.code{font-family:var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}
+  /* 서술형(desc/description/설명/summary): sans, N줄 클램프(기본 4). */
+  .kv .v.desc{font-family:var(--sans);white-space:normal;word-break:normal;overflow-wrap:anywhere;
+    display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:var(--desc-lines,4);overflow:hidden}
+
+  /* inline edit */
+  .edit{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+  .chips{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{display:inline-flex;align-items:center;gap:7px;background:#F3F4F6;border:1px solid var(--line2);
+    border-radius:5px;padding:3px 6px 3px 9px;font-family:var(--mono);font-size:11px;color:var(--fg2)}
+  .chip .ctxt{word-break:break-all}
+  .chip .cx{border:none;background:none;color:var(--mut3);cursor:pointer;font-size:12px;padding:0 1px;line-height:1}
+  .chip .cx:hover{color:var(--del)}
+  .chip .ok{border:none;background:var(--del);color:#fff;border-radius:4px;padding:1px 7px;font-size:10px;cursor:pointer}
+  .chip .no{border:none;background:none;color:var(--mut);font-size:10px;cursor:pointer;padding:0 2px}
+  .adder{display:flex;gap:6px}
+  .adder input{flex:1;min-width:0;background:#FBFBFC;border:1px solid var(--line2);border-radius:5px;
+    padding:5px 9px;font-family:var(--mono);font-size:11px;color:var(--fg);outline:none}
+  .adder input:focus{border-color:var(--accent)}
+  .adder .addbtn{border:1px solid var(--accent);background:var(--panel);color:var(--accent);border-radius:5px;
+    padding:4px 12px;font-size:11px;font-weight:600;flex:0 0 auto}
+  .adder .addbtn:hover{background:#F4F6FE}
+
+  /* detail panel */
+  .detail{flex:0 0 46%;min-width:400px;max-width:640px;overflow:auto;padding:20px 24px 52px;
+    border-left:1px solid var(--line);background:#FAFAFB}
+  .detail.closed{flex:0 0 50px;min-width:50px;padding:0;overflow:hidden;background:var(--panel)}
+  .detail.closed .dwrap{display:none}
+  .closedtab{height:100%;display:flex;align-items:flex-start;justify-content:center;padding-top:14px}
+  .reopen{display:flex;flex-direction:column;align-items:center;gap:8px;padding:11px 7px}
+  .reopen .vt{writing-mode:vertical-rl;font-family:var(--mono);font-size:11px;letter-spacing:.12em}
+  .dclose{display:none}
+  .detail:not(.closed) .closedtab{display:none}
+  .panelclose-row{display:flex;justify-content:flex-end;margin-bottom:10px}
+  .panelclose{display:inline-flex;align-items:center;gap:6px;color:var(--mut);font-size:12px;padding:4px 11px}
+  .panelclose:hover{color:var(--fg)}
+  .selname{font-family:var(--mono);font-size:17px;font-weight:600;line-height:1.2}
+  .selpath{font-family:var(--mono);font-size:11.5px;color:var(--mut2);margin-top:4px;word-break:break-all}
+  .dlabel{font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--mut);font-weight:600}
+  .cmpbar{display:flex;align-items:center;gap:11px;margin:18px 0 20px;flex-wrap:wrap}
+  .cmpbar select{background:var(--panel);border:1px solid #DDE0E5;border-radius:6px;padding:6px 11px;
+    font-size:12px;font-family:var(--mono);color:var(--fg);max-width:300px;cursor:pointer}
+
+  /* history timeline */
+  .timeline{position:relative;padding-left:7px;margin-top:12px}
+  .timeline .spine{position:absolute;left:12px;top:16px;bottom:16px;width:2px;background:var(--line2)}
+  .rev{display:flex;align-items:flex-start;gap:12px;padding:11px 11px 11px 4px;border-radius:6px;
+    cursor:pointer;position:relative;margin-bottom:2px}
+  .rev.sel{background:var(--panel);box-shadow:0 0 0 1px var(--accent)}
+  .rdot{width:12px;height:12px;border-radius:50%;flex:0 0 auto;margin-top:3px;background:var(--panel);
+    border:2px solid #CDD2D9;box-shadow:0 0 0 3px #FAFAFB}
+  .rev.sel .rdot{background:var(--accent);border-color:var(--accent)}
+  .rbody{flex:1;min-width:0}
+  .rmsg{font-size:13px;font-weight:600;color:#23262C}
+  .rmeta{font-family:var(--mono);font-size:11px;color:var(--mut2);margin-top:2px}
+  .rrestore{border:1px solid #DDE0E5;background:var(--panel);color:var(--mut);border-radius:5px;
+    padding:3px 10px;font-size:11px;flex:0 0 auto}
+  .rconfirm{display:flex;gap:5px;align-items:center;flex:0 0 auto}
+  .rconfirm .ok{border:none;background:var(--warn);color:#fff;border-radius:5px;padding:4px 10px;font-size:11px;cursor:pointer}
+  .rconfirm .no{border:none;background:none;color:var(--mut);font-size:11px;cursor:pointer}
+
+  /* diff */
+  .diffwrap{border:1px solid var(--line2);border-radius:6px;overflow:hidden;background:var(--panel);margin-top:12px}
+  .diffhead{display:flex;align-items:center;gap:9px;padding:8px 13px;background:#F3F4F6;
+    border-bottom:1px solid var(--line2);font-family:var(--mono);font-size:11px;color:var(--mut)}
+  .diffhead .arrow{color:var(--accent)}
+  .difflines{padding:8px 0}
+  .dl{padding:1.5px 15px;white-space:pre-wrap;word-break:break-all;font-family:var(--mono);font-size:12.5px;line-height:1.55;color:var(--mut)}
+  .dl.add{background:var(--okbg);color:var(--ok)}
+  .dl.del{background:var(--delbg);color:#B23A2E}
+  .dl.hunk{background:#EDF1FD;color:var(--accent);font-weight:500}
+  .diffempty{border:1px dashed #D7DAE0;border-radius:6px;padding:22px;text-align:center;color:var(--mut2);
+    font-size:13px;background:#FBFBFC;margin-top:12px}
+
+  .empty{color:var(--mut2);font-style:italic;padding:8px 0;font-size:13px}
+  .empty.err{color:var(--del);font-style:normal;word-break:break-all}
+
+  /* toast */
+  #toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:#15171C;color:#fff;
+    padding:10px 20px;border-radius:7px;font-size:13px;box-shadow:0 10px 30px rgba(0,0,0,.22);
+    animation:cmFade .18s ease;z-index:60;display:none}
+</style>
+</head>
+<body>
+  <div class="app" id="app">
+    <header>
+      <div class="brand">
+        <div class="logo"><i></i></div>
+        <div>
+          <div class="title">CLAUDE&nbsp;CONFIG&nbsp;MONITOR</div>
+          <div class="subtitle" id="subtitle">로딩 중…</div>
+        </div>
+      </div>
+      <div class="hbtns">
+        <button id="watcher-toggle" class="wbtn" title="watcher">
+          <span class="wdot" id="watcher-dot"></span><span class="blabel" id="watcher-label">watcher</span>
+        </button>
+        <button id="snap" title="스냅샷">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9a1 1 0 0 1 1-1h3l1.4-2h7.2L18 8h2a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/><circle cx="12" cy="13.5" r="3.2"/></svg>
+        </button>
+        <button id="refresh" title="새로고침">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 4 21 10 15 10"/><polyline points="3 20 3 14 9 14"/><path d="M4 9a8 8 0 0 1 13.1-3.1L21 10M3 14l3.9 4.1A8 8 0 0 0 20 15"/></svg>
+        </button>
+        <button id="report" title="리포트">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="14 3 14 9 20 9"/><line x1="8" y1="13.5" x2="16" y2="13.5"/><line x1="8" y1="17" x2="16" y2="17"/><line x1="8" y1="10" x2="10" y2="10"/></svg>
+        </button>
+        <button id="open-browser" title="브라우저에서 열기">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+        </button>
+        <button id="fullscreen" class="primary" title="전체화면">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+          <span class="blabel" id="fullscreen-label">전체화면</span>
+        </button>
+      </div>
+    </header>
+
+    <main>
+      <section class="left">
+        <div class="seclabel">
+          <span class="t">추적 파일</span><span class="h">클릭 → 이력 / diff</span>
+        </div>
+        <div id="tracked"></div>
+
+        <div class="seclabel mt">
+          <span class="t">설정</span><span class="h" id="config-hint">출처 경로 포함</span>
+        </div>
+        <div id="config"></div>
+      </section>
+
+      <section class="detail" id="detail">
+        <div class="dwrap">
+          <div class="panelclose-row">
+            <button class="panelclose" id="panel-close" title="이력 패널 닫기">패널 닫기 <span style="font-size:13px">›</span></button>
+          </div>
+          <div style="margin-bottom:18px">
+            <div class="selname" id="sel-name">파일 선택</div>
+            <div class="selpath" id="sel-path">왼쪽에서 추적 파일을 클릭하세요</div>
+          </div>
+          <div id="panel-body"></div>
+        </div>
+        <div class="closedtab">
+          <button class="reopen" id="panel-reopen" title="이력 패널 열기">
+            <span style="font-size:14px">‹</span><span class="vt">이력 / DIFF</span>
+          </button>
+        </div>
+      </section>
+    </main>
+  </div>
+  <div id="toast"></div>
+  <script type="module" src="./mcp-app.ts"></script>
+</body>
+</html>

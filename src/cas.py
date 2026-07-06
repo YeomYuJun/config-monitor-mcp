@@ -1,0 +1,371 @@
+#!/usr/bin/env python3
+r"""
+cas.py - Custom Content-Addressable Snapshot engine (git 원리, 독립 경로 추적판)
+
+git 과 다른 점:
+  - 단일 work-tree 루트를 가정하지 않는다. 흩어진 임의의 절대경로/디렉토리/glob 를
+    각각 독립적으로 추적한다. (10~20개 규모 대상)
+  - 저장소는 추적 대상과 분리된 한 곳(D:\.claude-snapshot 기본)에 모인다.
+
+변경 탐지 원리 (git index 모델):
+  1) stat fast-path: size + mtime_ns 가 index 와 같으면 내용을 안 읽고 unchanged.
+  2) 다르면 내용을 해싱해 hash 비교 (touch 등 내용 무변경 케이스 제거).
+  3) index 에 없는 경로 = 신규, 워킹트리에 없는데 index 에 있으면 = 삭제.
+"""
+from __future__ import annotations
+import argparse, json, os, sys, zlib, hashlib, glob as globmod, difflib
+from datetime import datetime
+
+# Windows 콘솔 기본 인코딩(cp949)에서 한글/em-dash 출력 시 UnicodeEncodeError 방지.
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
+
+DEFAULT_STORE = os.environ.get("CLAUDE_SNAPSHOT_STORE") or (
+    "D:\\.claude-snapshot" if os.name == "nt" else os.path.expanduser("~/.claude-snapshot")
+)
+
+def store_paths(store):
+    return {
+        "store": store,
+        "config": os.path.join(store, "config.json"),
+        "index": os.path.join(store, "index.json"),
+        "objects": os.path.join(store, "objects"),
+        "snapshots": os.path.join(store, "snapshots"),
+        "log": os.path.join(store, "log"),
+    }
+
+def load_json(path, default):
+    if not os.path.exists(path):
+        return default
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_json(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+def hash_bytes(b: bytes) -> str:
+    return hashlib.sha256(b).hexdigest()
+
+def object_path(p, h):
+    return os.path.join(p["objects"], h[:2], h[2:])
+
+def write_object(p, content: bytes) -> str:
+    h = hash_bytes(content)
+    dst = object_path(p, h)
+    if not os.path.exists(dst):
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        with open(dst, "wb") as f:
+            f.write(zlib.compress(content, 9))
+    return h
+
+def read_object(p, h) -> bytes:
+    with open(object_path(p, h), "rb") as f:
+        return zlib.decompress(f.read())
+
+def expand_tracked(tracked):
+    """config.tracked 항목(파일/디렉토리/glob)을 실제 파일 절대경로 집합으로 전개."""
+    files = set()
+    for entry in tracked:
+        pat = os.path.expanduser(os.path.expandvars(entry))
+        if any(c in pat for c in "*?[]"):
+            for m in globmod.glob(pat, recursive=True):
+                if os.path.isfile(m):
+                    files.add(os.path.abspath(m))
+        elif os.path.isdir(pat):
+            for root, _, names in os.walk(pat):
+                for n in names:
+                    files.add(os.path.abspath(os.path.join(root, n)))
+        elif os.path.isfile(pat):
+            files.add(os.path.abspath(pat))
+    return files
+
+def file_stat(path):
+    st = os.lstat(path)
+    return {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "mode": st.st_mode}
+
+def scan(p, config, index, rehash=True):
+    """추적 경로를 스캔해 변경을 분류. 반환: dict(status -> [paths]) + 새 index 후보."""
+    current = expand_tracked(config.get("tracked", []))
+    result = {"new": [], "modified": [], "deleted": [], "unchanged": []}
+    new_index = {}
+    for path in sorted(current):
+        try:
+            stt = file_stat(path)
+        except OSError:
+            continue
+        prev = index.get(path)
+        if prev is None:
+            h = write_object(p, open(path, "rb").read()) if rehash else None
+            new_index[path] = {**stt, "hash": h}
+            result["new"].append(path)
+            continue
+        if prev["size"] == stt["size"] and prev["mtime_ns"] == stt["mtime_ns"]:
+            new_index[path] = prev
+            result["unchanged"].append(path)
+            continue
+        h = hash_bytes(open(path, "rb").read())
+        if h == prev.get("hash"):
+            new_index[path] = {**stt, "hash": h}
+            result["unchanged"].append(path)
+        else:
+            if rehash:
+                write_object(p, open(path, "rb").read())
+            new_index[path] = {**stt, "hash": h}
+            result["modified"].append(path)
+    for path in index:
+        if path not in current:
+            result["deleted"].append(path)
+    return result, new_index
+
+def cmd_init(args):
+    p = store_paths(args.store)
+    for d in (p["store"], p["objects"], p["snapshots"], p["log"]):
+        os.makedirs(d, exist_ok=True)
+    if not os.path.exists(p["config"]):
+        save_json(p["config"], {"version": 1, "store": args.store, "tracked": []})
+    if not os.path.exists(p["index"]):
+        save_json(p["index"], {})
+    print(f"초기화 완료: {args.store}")
+
+def cmd_track(args):
+    p = store_paths(args.store)
+    config = load_json(p["config"], {"version": 1, "tracked": []})
+    added = []
+    for path in args.paths:
+        ap = os.path.abspath(os.path.expanduser(path)) if not any(c in path for c in "*?[]") else path
+        if ap not in config["tracked"]:
+            config["tracked"].append(ap)
+            added.append(ap)
+    save_json(p["config"], config)
+    print("추가됨:\n  " + "\n  ".join(added) if added else "이미 모두 추적 중")
+
+def cmd_untrack(args):
+    p = store_paths(args.store)
+    config = load_json(p["config"], {"version": 1, "tracked": []})
+    before = len(config["tracked"])
+    config["tracked"] = [t for t in config["tracked"] if t not in args.paths]
+    save_json(p["config"], config)
+    print(f"제거됨: {before - len(config['tracked'])}개")
+
+def cmd_status(args):
+    p = store_paths(args.store)
+    config = load_json(p["config"], {"tracked": []})
+    index = load_json(p["index"], {})
+    result, _ = scan(p, config, index, rehash=False)
+    if args.json:  # 머신용: 순수 JSON 만
+        print(json.dumps({k: result[k] for k in result}, ensure_ascii=False))
+        return
+    def show(key, sym):
+        for path in result[key]:
+            print(f"  {sym} {path}")
+    print(f"추적 대상: {len(config.get('tracked', []))} 항목  /  저장소: {args.store}")
+    if result["new"]:      print("신규(new):");      show("new", "+")
+    if result["modified"]: print("수정(modified):");  show("modified", "~")
+    if result["deleted"]:  print("삭제(deleted):");   show("deleted", "-")
+    if sum(len(result[k]) for k in ("new", "modified", "deleted")) == 0:
+        print("변경 없음 (clean).")
+
+def _take_snapshot(p, message, force=False):
+    """스냅샷 코어. 새 스냅샷 id 를 반환(변경 없고 force 아니면 None). cmd_snapshot/cmd_restore 공용."""
+    config = load_json(p["config"], {"tracked": []})
+    index = load_json(p["index"], {})
+    result, new_index = scan(p, config, index, rehash=True)
+    changed = sum(len(result[k]) for k in ("new", "modified", "deleted"))
+    if changed == 0 and not force:
+        return None, result
+    snaps = sorted(os.listdir(p["snapshots"])) if os.path.isdir(p["snapshots"]) else []
+    parent = snaps[-1] if snaps else None
+    ts = datetime.now().strftime("%Y%m%dT%H%M%S_%f")
+    manifest = {
+        "time": datetime.now().isoformat(),
+        "message": message or "",
+        "parent": parent,
+        "changes": {k: result[k] for k in ("new", "modified", "deleted")},
+        "entries": {path: {"hash": e.get("hash"), "size": e["size"]} for path, e in new_index.items()},
+    }
+    save_json(os.path.join(p["snapshots"], ts + ".json"), manifest)
+    save_json(p["index"], new_index)
+    return ts, result
+
+def cmd_snapshot(args):
+    p = store_paths(args.store)
+    ts, result = _take_snapshot(p, args.message, args.force)
+    if ts is None:
+        print("변경 없음 — 스냅샷 생략 (--force 로 강제)")
+        return
+    print(f"스냅샷 {ts}  (+{len(result['new'])} ~{len(result['modified'])} -{len(result['deleted'])})")
+
+def cmd_restore(args):
+    """특정 스냅샷의 blob 으로 파일을 복원. 안전장치: 복원 전 스냅샷(되돌릴 지점) + .bak + atomic write.
+    출력은 JSON 한 줄 (MCP 가 파싱)."""
+    p = store_paths(args.store)
+    target = os.path.abspath(os.path.expanduser(args.path))
+    sid = args.frm
+    # 복원 전 현재 상태를 스냅샷으로 보존(복원도 되돌릴 수 있게).
+    pre_snapshot = None
+    if not args.no_snapshot:
+        pre_snapshot, _ = _take_snapshot(p, f"before restore of {os.path.basename(target)}")
+    blob = _content_at(p, sid, target)
+    if blob is None:
+        print(json.dumps({"ok": False, "message": f"스냅샷 {sid} 에 '{target}' 내용 없음(추적 안 됨/삭제됨)"},
+                         ensure_ascii=False))
+        sys.exit(1)
+    bak = None
+    if os.path.exists(target) and not args.no_backup:
+        bak = f"{target}.{datetime.now().strftime('%Y%m%d%H%M%S')}.bak"
+        with open(bak, "wb") as f:
+            f.write(open(target, "rb").read())
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    tmp = target + ".restore.tmp"
+    with open(tmp, "wb") as f:
+        f.write(blob)
+    os.replace(tmp, target)
+    print(json.dumps({"ok": True, "message": f"복원 완료: {os.path.basename(target)} <- {sid}",
+                      "path": target, "from": sid, "backup": bak, "pre_snapshot": pre_snapshot},
+                     ensure_ascii=False))
+
+def cmd_log(args):
+    p = store_paths(args.store)
+    if not os.path.isdir(p["snapshots"]):
+        print("스냅샷 없음"); return
+    for name in sorted(os.listdir(p["snapshots"]), reverse=True)[: args.limit]:
+        m = load_json(os.path.join(p["snapshots"], name), {})
+        c = m.get("changes", {})
+        print(f"{name[:-5]}  +{len(c.get('new',[]))} ~{len(c.get('modified',[]))} -{len(c.get('deleted',[]))}  {m.get('message','')}")
+
+def _latest_hash_for(p, path):
+    index = load_json(p["index"], {})
+    e = index.get(os.path.abspath(path))
+    return e.get("hash") if e else None
+
+def _snapshot_ids(p):
+    if not os.path.isdir(p["snapshots"]):
+        return []
+    return [n[:-5] for n in sorted(os.listdir(p["snapshots"])) if n.endswith(".json")]
+
+def _manifest(p, sid):
+    return load_json(os.path.join(p["snapshots"], sid + ".json"), {})
+
+def _hash_in_snapshot(p, sid, target):
+    e = _manifest(p, sid).get("entries", {}).get(target)
+    return e.get("hash") if e else None
+
+def _content_at(p, ref, target):
+    """ref: 'work'/None -> 현재 파일, 그 외 -> 스냅샷 id 의 blob."""
+    if ref in (None, "work", "WORK"):
+        return open(target, "rb").read() if os.path.exists(target) else None
+    h = _hash_in_snapshot(p, ref, target)
+    if not h:
+        return None
+    try:
+        return read_object(p, h)
+    except Exception:
+        return None
+
+def cmd_history(args):
+    """파일별 리비전 이력: 해시가 바뀐 스냅샷만 추려 git log 처럼."""
+    p = store_paths(args.store)
+    target = os.path.abspath(args.path)
+    rows = []
+    last = "__init__"
+    for sid in _snapshot_ids(p):
+        m = _manifest(p, sid)
+        e = m.get("entries", {}).get(target)
+        h = e.get("hash") if e else None
+        if h != last:
+            rows.append({"snapshot": sid, "time": m.get("time"), "message": m.get("message", ""),
+                         "hash": (h[:12] if h else None), "present": e is not None})
+            last = h
+    print(json.dumps({"path": target, "revisions": rows}, ensure_ascii=False,
+                     indent=None if args.json else 2))
+
+def cmd_diff(args):
+    p = store_paths(args.store)
+    target = os.path.abspath(args.path)
+    ids = _snapshot_ids(p)
+    frm = args.frm or (ids[-1] if ids else None)
+    to = args.to or "work"
+    if frm is None:
+        print("스냅샷 없음 (아직 snapshot 안 됨)"); return
+    a = _content_at(p, frm, target)
+    b = _content_at(p, to, target)
+    if a is None and b is None:
+        print("양쪽 모두 내용 없음(추적 안 됨/삭제됨)"); return
+    try:
+        at = (a or b"").decode("utf-8", "replace").splitlines(keepends=True)
+        bt = (b or b"").decode("utf-8", "replace").splitlines(keepends=True)
+    except Exception:
+        print("바이너리/판독 불가 — 텍스트 diff 생략"); return
+    diff = "".join(difflib.unified_diff(at, bt, fromfile=str(frm), tofile=str(to)))
+    print(diff if diff else "텍스트 변경 없음")
+
+def cmd_show(args):
+    p = store_paths(args.store)
+    h = _latest_hash_for(p, os.path.abspath(args.path))
+    if not h:
+        print("index 에 없음"); return
+    sys.stdout.buffer.write(read_object(p, h))
+
+def cmd_watcher_status(args):
+    """watcher.ps1 가 쓰는 watcher.json(heartbeat) 을 읽어 상주 여부를 판정.
+    heartbeat 가 debounce 의 3배 + 5초 안이면 running, 아니면 stale(죽었거나 멈춤)."""
+    state_path = os.path.join(args.store, "watcher.json")
+    if not os.path.exists(state_path):
+        print(json.dumps({"running": False, "reason": "watcher.json 없음 (watcher 미실행)"},
+                         ensure_ascii=False))
+        return
+    with open(state_path, encoding="utf-8-sig") as f:  # PS 가 BOM 을 붙여도 견디게
+        st = json.load(f)
+    age = None
+    stale = True
+    err = None
+    try:
+        hb = datetime.fromisoformat(str(st.get("heartbeat")))
+        now = datetime.now(hb.tzinfo) if hb.tzinfo else datetime.now()  # tz-aware/naive 일치
+        age = (now - hb).total_seconds()
+        thresh = (st.get("debounceMs", 2000) / 1000.0) * 3 + 5
+        stale = age > thresh
+    except Exception as e:  # 어떤 파싱 이상도 null 대신 원인 보고
+        err = f"{type(e).__name__}: {e}"
+    print(json.dumps({
+        "running": (not stale), "stale": stale, "age_sec": age, "error": err,
+        "pid": st.get("pid"), "started": st.get("started"), "heartbeat": st.get("heartbeat"),
+        "dirs": st.get("dirs", []), "lastEvent": st.get("lastEvent", ""),
+    }, ensure_ascii=False))
+
+def main():
+    ap = argparse.ArgumentParser(prog="cas", description="Custom CAS snapshot engine")
+    ap.add_argument("--store", default=DEFAULT_STORE, help=f"저장소 경로 (기본 {DEFAULT_STORE})")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("init").set_defaults(func=cmd_init)
+    sp = sub.add_parser("track"); sp.add_argument("paths", nargs="+"); sp.set_defaults(func=cmd_track)
+    sp = sub.add_parser("untrack"); sp.add_argument("paths", nargs="+"); sp.set_defaults(func=cmd_untrack)
+    sp = sub.add_parser("status"); sp.add_argument("--json", action="store_true"); sp.set_defaults(func=cmd_status)
+    sp = sub.add_parser("snapshot"); sp.add_argument("-m", "--message", default="")
+    sp.add_argument("--force", action="store_true"); sp.set_defaults(func=cmd_snapshot)
+    sp = sub.add_parser("log"); sp.add_argument("-n", "--limit", type=int, default=20); sp.set_defaults(func=cmd_log)
+    sp = sub.add_parser("history"); sp.add_argument("path"); sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_history)
+    sp = sub.add_parser("diff"); sp.add_argument("path")
+    sp.add_argument("--from", dest="frm"); sp.add_argument("--to", dest="to"); sp.set_defaults(func=cmd_diff)
+    sp = sub.add_parser("show"); sp.add_argument("path"); sp.set_defaults(func=cmd_show)
+    sub.add_parser("watcher-status").set_defaults(func=cmd_watcher_status)
+    sp = sub.add_parser("restore"); sp.add_argument("path")
+    sp.add_argument("--from", dest="frm", required=True, help="복원할 스냅샷 id")
+    sp.add_argument("--no-snapshot", action="store_true", help="복원 전 스냅샷 생략")
+    sp.add_argument("--no-backup", action="store_true", help=".bak 백업 생략")
+    sp.set_defaults(func=cmd_restore)
+
+    args = ap.parse_args()
+    args.func(args)
+
+if __name__ == "__main__":
+    main()
