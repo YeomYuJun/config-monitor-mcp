@@ -101,8 +101,13 @@ def _short(v, n=160):
     s = str(v)
     return s if len(s) <= n else s[:n] + "…"
 
+DESC_KEYS = {"desc", "description", "설명", "summary"}
+
 def card(name, kv, badge=None, ok=False, edit=None):
-    c = {"name": name, "badge": badge, "ok": ok, "kv": [[k, _short(v)] for k, v in kv]}
+    # 서술형 값은 넉넉히 담고(줄 수 표시는 UI 의 -webkit-line-clamp 가 담당),
+    # 코드형/경로 값만 160자 선절단 — 슬라이더(2~10줄) 전 구간이 실제 텍스트로 채워지게.
+    c = {"name": name, "badge": badge, "ok": ok,
+         "kv": [[k, _short(v, 600 if str(k).lower() in DESC_KEYS else 160)] for k, v in kv]}
     if edit:  # UI 가 인라인 add/remove 버튼을 그릴 때 쓰는 구조화 메타
         c["edit"] = edit
     return c

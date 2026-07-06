@@ -69,6 +69,9 @@
   .seclabel.mt{margin-top:30px}
   .seclabel .t{font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--mut);font-weight:600}
   .seclabel .h{font-family:var(--mono);font-size:11px;color:var(--mut2)}
+  .seclabel .linkbtn{margin-left:auto;border:none;background:none;color:var(--mut);font-size:11.5px;
+    cursor:pointer;padding:2px 5px;border-radius:4px}
+  .seclabel .linkbtn:hover{color:var(--fg);background:#DDE2EA;border:none}
 
   /* tracked file rows */
   .files{display:flex;flex-direction:column;gap:8px}
@@ -161,11 +164,12 @@
 
   /* history timeline: 고정 높이 스크롤(.rev-list) 안에 relative 트랙(.rev-track) — spine 이 스크롤과 함께 늘어남 */
   .rev-list{max-height:340px;overflow-y:auto;overflow-x:hidden;margin-top:12px}
-  .rev-track{position:relative;padding-left:7px}
+  .rev-track{position:relative;padding:1px 4px 1px 7px}
   .rev-track .spine{position:absolute;left:12px;top:16px;bottom:16px;width:2px;background:var(--line2)}
   .rev{display:flex;align-items:flex-start;gap:12px;padding:11px 11px 11px 4px;border-radius:6px;
-    cursor:pointer;position:relative;margin-bottom:2px}
-  .rev.sel{background:var(--panel);box-shadow:0 0 0 1px var(--accent)}
+    cursor:pointer;position:relative;margin-bottom:2px;border:1px solid transparent}
+  /* 선택 표시는 외곽 shadow 대신 실제 border — 스크롤 컨테이너(overflow)에 잘리지 않는다 */
+  .rev.sel{background:var(--panel);border-color:var(--accent)}
   .rdot{width:12px;height:12px;border-radius:50%;flex:0 0 auto;margin-top:3px;background:var(--panel);
     border:2px solid #CDD2D9;box-shadow:0 0 0 3px #FAFAFB}
   .rev.sel .rdot{background:var(--accent);border-color:var(--accent)}
@@ -282,6 +286,7 @@
 
         <div class="seclabel mt">
           <span class="t">설정</span><span class="h" id="config-hint">출처 경로 포함</span>
+          <button class="linkbtn" id="collapse-all" title="펼쳐진 설정 분류를 전부 접기">전부 접기</button>
         </div>
         <div id="config"></div>
       </section>

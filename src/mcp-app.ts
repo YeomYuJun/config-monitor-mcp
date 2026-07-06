@@ -56,6 +56,7 @@ let fromRev = "";
 let toRev = "work";
 let detailOpen = true;
 const collapsed = new Set<string>();         // 접힌 섹션 title
+const secTitles = new Set<string>();         // 접기 가능한 섹션 title (전부 접기 대상)
 let collapsedInit = false;                    // 기본 접힘 1회만 적용
 
 let toastT: number | undefined;
@@ -100,6 +101,7 @@ function renderTracked(status: any): number {
 function renderConfig(sections: any[]): void {
   const host = $("config");
   host.innerHTML = "";
+  secTitles.clear();
   if (!collapsedInit) {
     for (const sec of sections) {
       if (/^(Skills|Agents|Scheduled|Desktop)/.test(sec.title)) collapsed.add(sec.title);
@@ -107,9 +109,11 @@ function renderConfig(sections: any[]): void {
     collapsedInit = true;
   }
   for (const sec of sections) {
+    secTitles.add(sec.title);
     const isCol = collapsed.has(sec.title);
     const secEl = document.createElement("div");
     secEl.className = "sec" + (isCol ? " collapsed" : "");
+    secEl.dataset.col = "1";
 
     const head = document.createElement("div");
     head.className = "sechead";
@@ -313,6 +317,8 @@ const LIB_STATUS: Record<string, [string, string]> = {
 function renderLibrary(host: HTMLElement, res: any): void {
   const secEl = document.createElement("div");
   secEl.className = "sec" + (collapsed.has("Library") ? " collapsed" : "");
+  secEl.dataset.col = "1";
+  secTitles.add("Library");
   const libs = (res && res.libraries) || [];
   const items: any[] = [];
   for (const l of libs) {
@@ -703,6 +709,11 @@ function wireSettings(): void {
 wireSettings();
 
 // ----- wiring -----
+$("collapse-all").addEventListener("click", () => {
+  // 접기 가능(data-col) 섹션만 — 라이브러리 등록 UI 같은 헤더 토글 없는 블럭은 제외
+  secTitles.forEach((t) => collapsed.add(t));
+  document.querySelectorAll("#config .sec[data-col]").forEach((el) => el.classList.add("collapsed"));
+});
 $("refresh").addEventListener("click", () => { refresh(); flashToast("새로고침"); });
 $("snap").addEventListener("click", async () => {
   await callTool("snapshot_now", { message: "from dashboard" });
