@@ -151,9 +151,14 @@ function renderConfig(sections: any[]): void {
   }
 }
 
-// inline edit controls (perm/hook add/remove). edit meta is set by claude_config.py.
+// inline edit controls. edit meta is set by claude_config.py.
+//   perm/hook            : 항목 chips + adder (기존)
+//   mcp/skill/agent      : 카드 자체 제거 버튼 (인라인 확인)
+//   mcp-add/skill-add/agent-add : adder 만 (입력 파싱 후 해당 add 도구 호출)
 // removal uses inline confirm (window.confirm may be blocked in iframe sandbox).
 function buildEditUI(edit: any): HTMLElement {
+  if (["mcp", "skill", "agent"].includes(edit.kind)) return buildRemoveUI(edit);
+  if (["mcp-add", "skill-add", "agent-add"].includes(edit.kind)) return buildAddUI(edit);
   const isPerm = edit.kind === "perm";
   const doRemove = (it: string) =>
     isPerm
@@ -220,6 +225,187 @@ function buildEditUI(edit: any): HTMLElement {
   return wrap;
 }
 
+// 카드 단위 제거(mcp/skill/agent): 제거 버튼 -> 인라인 확인 -> 해당 remove 도구 호출.
+function buildRemoveUI(edit: any): HTMLElement {
+  const doRemove = () => {
+    if (edit.kind === "mcp") return callTool("config_mcp_remove", { name: edit.name, scope: edit.scope });
+    if (edit.kind === "skill") return callTool("config_skill_remove", { name: edit.name });
+    return callTool("config_agent_remove", { name: edit.name });
+  };
+  const wrap = document.createElement("div");
+  wrap.className = "edit";
+  const btn = document.createElement("button");
+  btn.className = "cx";
+  btn.textContent = "✕ 제거";
+  btn.title = edit.kind === "mcp" ? `mcpServers.${edit.name} 제거 (${edit.scope})` : ".trash 로 이동(복구 가능)";
+  btn.addEventListener("click", () => {
+    const ok = document.createElement("button");
+    ok.className = "ok";
+    ok.textContent = "삭제확정";
+    const no = document.createElement("button");
+    no.className = "no";
+    no.textContent = "취소";
+    wrap.replaceChildren(ok, no);
+    no.addEventListener("click", () => wrap.replaceWith(buildRemoveUI(edit)));
+    ok.addEventListener("click", async () => {
+      ok.textContent = "…";
+      try {
+        const res = jparse(await doRemove());
+        if (res && res.ok === false) { ok.textContent = "실패"; flashToast(res.message || "실패"); return; }
+        flashToast("제거됨 · " + edit.name);
+        await refresh();
+      } catch (e) { ok.textContent = "실패"; console.error("[config-monitor] remove", e); }
+    });
+  });
+  wrap.appendChild(btn);
+  return wrap;
+}
+
+// 추가 전용 카드(mcp-add/skill-add/agent-add).
+//   mcp   입력: name {"command":...}   (첫 토큰=이름, 나머지=서버 JSON)
+//   skill/agent 입력: name 설명…       (첫 토큰=이름, 나머지=description)
+function buildAddUI(edit: any): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "edit";
+  const adder = document.createElement("div");
+  adder.className = "adder";
+  const input = document.createElement("input");
+  input.placeholder = edit.kind === "mcp-add" ? 'name {"command":"npx","args":[...]}' : "name 설명…";
+  const add = document.createElement("button");
+  add.className = "addbtn";
+  add.textContent = "추가";
+  const submit = async () => {
+    const v = input.value.trim();
+    if (!v) return;
+    const sp = v.indexOf(" ");
+    const name = sp < 0 ? v : v.slice(0, sp);
+    const rest = sp < 0 ? "" : v.slice(sp + 1).trim();
+    add.textContent = "…";
+    try {
+      let res: any;
+      if (edit.kind === "mcp-add") {
+        if (!rest) { flashToast("서버 JSON 필요: name {…}"); add.textContent = "추가"; return; }
+        res = jparse(await callTool("config_mcp_add", { name, serverJson: rest, scope: edit.scope }));
+      } else if (edit.kind === "skill-add") {
+        res = jparse(await callTool("skill_scaffold", { name, desc: rest || undefined }));
+      } else {
+        res = jparse(await callTool("config_agent_add", { name, desc: rest || undefined }));
+      }
+      if (res && res.ok === false) { add.textContent = "실패"; flashToast(res.message || "실패"); return; }
+      flashToast("추가됨 · " + name);
+      await refresh();
+    } catch (e) { add.textContent = "실패"; console.error("[config-monitor] add", e); }
+  };
+  add.addEventListener("click", submit);
+  input.addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") submit(); });
+  adder.append(input, add);
+  wrap.appendChild(adder);
+  return wrap;
+}
+
+// ----- Library section (라이브러리 토글: /plugin 식 설치/제거) -----
+const LIB_STATUS: Record<string, [string, string]> = {
+  not_installed: ["미설치", ""],
+  installed: ["설치됨", "ok"],
+  modified: ["변경됨", "warn"],
+};
+
+function renderLibrary(host: HTMLElement, res: any): void {
+  const secEl = document.createElement("div");
+  secEl.className = "sec" + (collapsed.has("Library") ? " collapsed" : "");
+  const libs = (res && res.libraries) || [];
+  const items: any[] = [];
+  for (const l of libs) {
+    for (const [cat, arr] of Object.entries(l.categories || {})) {
+      for (const it of arr as any[]) items.push({ ...it, category: cat, lib: l.lib });
+    }
+  }
+  const head = document.createElement("div");
+  head.className = "sechead";
+  head.innerHTML =
+    `<div class="secrow"><span class="chev2">▾</span>` +
+    `<span class="sectitle">Library (토글 설치)</span>` +
+    `<span class="seccount">${items.length}</span></div>` +
+    (libs.length ? `<div class="secsrc"><span class="lbl">출처</span><span class="val">${esc(libs.map((l: any) => l.lib).join(" · "))}</span></div>` : "");
+  head.addEventListener("click", () => {
+    if (collapsed.has("Library")) collapsed.delete("Library"); else collapsed.add("Library");
+    secEl.classList.toggle("collapsed");
+  });
+  secEl.appendChild(head);
+
+  const body = document.createElement("div");
+  body.className = "secbody";
+  if (!items.length) body.innerHTML = `<div class="empty">라이브러리 항목 없음</div>`;
+  for (const it of items) {
+    const [label, cls] = LIB_STATUS[it.status] || [it.status, ""];
+    const row = document.createElement("div");
+    row.className = "card";
+    row.innerHTML =
+      `<div class="cname"><span class="nm">${esc(it.category)} / ${esc(it.name)}</span>` +
+      `<span class="badge ${cls === "ok" ? "ok" : ""}">${esc(label)}${it.kit_ref ? " · kit참조" : ""}</span></div>`;
+    const act = document.createElement("div");
+    act.className = "edit";
+    const mkBtn = (txt: string, tool: string, confirmTxt?: string) => {
+      const b = document.createElement("button");
+      b.className = "addbtn";
+      b.textContent = txt;
+      b.addEventListener("click", async () => {
+        if (confirmTxt && b.textContent !== confirmTxt) { b.textContent = confirmTxt; return; } // 2-click 확인
+        b.textContent = "…";
+        try {
+          const r = jparse(await callTool(tool, { category: it.category, name: it.name }));
+          if (r && r.ok === false) { flashToast(r.message || "실패"); b.textContent = "실패"; return; }
+          flashToast(`${txt} 완료 · ${it.name}`);
+          await refresh();
+        } catch (e) { b.textContent = "실패"; console.error("[config-monitor] library", e); }
+      });
+      return b;
+    };
+    if (it.status === "not_installed") act.appendChild(mkBtn("설치", "library_install"));
+    if (it.status === "modified") act.appendChild(mkBtn("동기화", "library_install", "덮어쓰기 확정(백업됨)"));
+    if (it.status !== "not_installed") act.appendChild(mkBtn("제거", "library_uninstall", "제거 확정(.trash)"));
+    row.appendChild(act);
+    body.appendChild(row);
+  }
+  secEl.appendChild(body);
+  host.appendChild(secEl);
+}
+
+async function refreshLibrary(): Promise<void> {
+  const host = $("config");
+  try {
+    const res = jparse(await callTool("library_scan"));
+    // 라이브러리 미설정(빈 목록)은 정상 상태 — 섹션 대신 등록 UI 로 진행
+    if (res && res.ok !== false && (res.libraries || []).length) { renderLibrary(host, res); return; }
+  } catch { /* 오류 -> 등록 UI */ }
+  // 등록 UI: 라이브러리 경로 입력 1회
+  const secEl = document.createElement("div");
+  secEl.className = "sec";
+  secEl.innerHTML =
+    `<div class="sechead"><div class="secrow"><span class="chev2">▾</span>` +
+    `<span class="sectitle">Library (토글 설치)</span><span class="seccount">미등록</span></div></div>`;
+  const body = document.createElement("div");
+  body.className = "secbody";
+  const adder = document.createElement("div");
+  adder.className = "adder";
+  const input = document.createElement("input");
+  input.placeholder = "라이브러리 경로 (.claude 구조 디렉토리)";
+  const btn = document.createElement("button");
+  btn.className = "addbtn";
+  btn.textContent = "등록";
+  btn.addEventListener("click", async () => {
+    const v = input.value.trim();
+    if (!v) return;
+    btn.textContent = "…";
+    try { await callTool("library_scan", { lib: v }); flashToast("라이브러리 등록됨"); await refresh(); }
+    catch (e) { btn.textContent = "실패"; console.error("[config-monitor] lib register", e); }
+  });
+  adder.append(input, btn);
+  body.appendChild(adder);
+  secEl.appendChild(body);
+  host.appendChild(secEl);
+}
+
 // ----- detail panel: history + diff -----
 const revTime = (r: any) => (r.time || "").replace("T", " ").slice(0, 19);
 const revLabel = (id: string) => {
@@ -280,15 +466,18 @@ function renderHistory(): void {
   hl.textContent = "변경 이력";
   body.appendChild(hl);
 
+  // 고정 높이 스크롤 컨테이너 > relative 트랙 (spine 이 스크롤 내용과 함께 늘어나도록)
+  const list = document.createElement("div");
+  list.className = "rev-list";
   const tl = document.createElement("div");
-  tl.className = "timeline";
+  tl.className = "rev-track";
   tl.innerHTML = `<div class="spine"></div>`;
   revsDesc.forEach((r) => {
     const item = document.createElement("div");
     item.className = "rev" + (r.snapshot === fromRev ? " sel" : "");
     item.innerHTML =
       `<span class="rdot"></span>` +
-      `<div class="rbody"><div class="rmsg">${esc(r.message || "(no message)")}</div>` +
+      `<div class="rbody"><div class="rmsg" title="${esc(r.message || "")}">${esc(r.message || "(no message)")}</div>` +
       `<div class="rmeta">${esc(revTime(r))} · ${esc(r.hash || "삭제됨")}</div></div>` +
       `<button class="rrestore" title="이 버전으로 파일 복원">복원</button>`;
     item.querySelector(".rbody")!.addEventListener("click", () => {
@@ -299,7 +488,8 @@ function renderHistory(): void {
     });
     tl.appendChild(item);
   });
-  body.appendChild(tl);
+  list.appendChild(tl);
+  body.appendChild(list);
 
   const dl = document.createElement("div");
   dl.className = "dlabel";
@@ -398,6 +588,7 @@ async function refresh(): Promise<void> {
   } catch (e) {
     showErr("config", "설정", e);
   }
+  try { await refreshLibrary(); } catch (e) { console.error("[config-monitor] library", e); }
   const now = new Date().toTimeString().slice(0, 8);
   $("subtitle").textContent = `추적 ${trackedCount}개 · 갱신 ${now}`;
   refreshWatcher();
@@ -415,10 +606,11 @@ async function refreshWatcher(): Promise<boolean> {
     const st = jparse(await callTool("watcher_status"));
     running = !!(st && st.running);
     dot.className = "wdot" + (running ? " on" : "");
-    label.textContent = running ? "watcher 실행 중" : "watcher 정지";
+    // 파싱/상태 오류는 '정지'로 뭉개지 않고 명시한다 (침묵 실패가 디버깅을 막았던 회귀 가드).
+    label.textContent = running ? "watcher 실행 중" : (st?.error ? "watcher 상태 오류" : "watcher 정지");
     btn.title = running
       ? `pid ${st.pid} · ${(st.dirs || []).length} dirs · ${Math.round(st.age_sec || 0)}s 전`
-      : (st?.reason || "정지됨");
+      : (st?.error || st?.reason || "정지됨");
   } catch (e) {
     dot.className = "wdot";
     label.textContent = "watcher ?";
@@ -476,6 +668,39 @@ function syncDisplayModeButton(): void {
   else btn.style.display = "";
   applyDisplayMode(ctx?.displayMode || "inline");
 }
+
+// ----- display settings popover (accent / 출처 표시 / desc 줄 수) -----
+function wireSettings(): void {
+  const btn = $("settings");
+  const pop = $("setpop");
+  const setOpen = (open: boolean) => {
+    pop.hidden = !open;
+    btn.classList.toggle("open", open);
+    let bd = document.getElementById("setpop-backdrop");
+    if (open && !bd) {
+      bd = document.createElement("div");
+      bd.id = "setpop-backdrop";
+      bd.addEventListener("click", () => setOpen(false));
+      document.body.appendChild(bd);
+    } else if (!open && bd) bd.remove();
+  };
+  btn.addEventListener("click", () => setOpen(pop.hidden));
+  pop.addEventListener("click", (e) => e.stopPropagation());
+  document.querySelectorAll<HTMLElement>(".setpop .swatch").forEach((sw) => {
+    sw.addEventListener("click", () => {
+      document.documentElement.style.setProperty("--accent", sw.dataset.c!);
+      document.querySelectorAll(".setpop .swatch").forEach((x) => x.classList.toggle("sel", x === sw));
+    });
+  });
+  ($("opt-src") as HTMLInputElement).addEventListener("change", (e) =>
+    document.body.classList.toggle("nosrc", !(e.target as HTMLInputElement).checked));
+  const lines = $("opt-lines") as HTMLInputElement;
+  lines.addEventListener("input", () => {
+    document.documentElement.style.setProperty("--desc-lines", lines.value);
+    $("opt-lines-val").textContent = lines.value;
+  });
+}
+wireSettings();
 
 // ----- wiring -----
 $("refresh").addEventListener("click", () => { refresh(); flashToast("새로고침"); });

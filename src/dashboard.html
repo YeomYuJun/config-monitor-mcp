@@ -9,8 +9,8 @@
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
 <style>
   :root{
-    --bg:#EEF0F3; --panel:#FFFFFF; --panel2:#F6F7F9; --line:#E0E3E8; --line2:#E3E5E9;
-    --fg:#15171C; --fg2:#3A3D45; --mut:#6B7077; --mut2:#9AA0A8; --mut3:#AEB3BB;
+    --bg:#E5E8EE; --panel:#FFFFFF; --panel2:#E9ECF2; --line:#CAD0D9; --line2:#D1D6DE;
+    --fg:#15171C; --fg2:#2F333A; --mut:#6B7077; --mut2:#7C828B; --mut3:#8A9099;
     --accent:#2B5CE6; --ok:#1F7A4D; --okbg:rgba(31,122,77,.13);
     --warn:#B45309; --warnbg:rgba(180,83,9,.13); --del:#C0392B; --delbg:rgba(192,57,43,.10);
     --sans:'IBM Plex Sans','Segoe UI',system-ui,sans-serif;
@@ -73,7 +73,8 @@
   /* tracked file rows */
   .files{display:flex;flex-direction:column;gap:8px}
   .file{display:flex;align-items:center;gap:12px;padding:12px 13px;border:1px solid var(--line2);
-    border-radius:6px;background:var(--panel);cursor:pointer;transition:box-shadow .12s,border-color .12s}
+    border-radius:6px;background:var(--panel);cursor:pointer;box-shadow:0 1px 2px rgba(20,24,34,.05);
+    transition:box-shadow .12s,border-color .12s}
   .file:hover{border-color:#C3C8D0}
   .file.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
   .file .fmeta{min-width:0;flex:1}
@@ -87,7 +88,9 @@
   .fbadge.deleted{background:var(--delbg);color:var(--del)}
 
   /* config sections (collapsible) */
-  .sec{border:1px solid var(--line);border-radius:7px;background:var(--panel);margin-bottom:11px;overflow:hidden}
+  .sec{border:1px solid var(--line);border-radius:8px;background:var(--panel);margin-bottom:11px;overflow:hidden;
+    box-shadow:0 1px 3px rgba(20,24,34,.06);transition:background .12s,border-color .12s,box-shadow .12s}
+  .sec:hover{background:#F4F6FA;border-color:#AEB7C4;box-shadow:0 2px 6px rgba(20,24,34,.10)}
   .sechead{padding:12px 14px;cursor:pointer}
   .secrow{display:flex;align-items:center;gap:11px}
   .chev2{display:inline-block;transition:transform .15s;color:var(--mut2);font-size:10px;flex:0 0 auto}
@@ -97,24 +100,25 @@
     border-radius:4px;flex:0 0 auto}
   .secsrc{display:flex;gap:6px;align-items:baseline;margin-top:6px;padding-left:21px}
   .secsrc .lbl{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut3);font-weight:600;flex:0 0 auto}
-  .secsrc .val{font-family:var(--mono);font-size:11px;color:#7E848C;word-break:break-all}
-  .secbody{background:var(--panel2);border-top:1px solid #E6E8EC;padding:12px 13px;
+  .secsrc .val{font-family:var(--mono);font-size:11px;color:#5A6069;word-break:break-all}
+  .secbody{background:var(--panel2);border-top:1px solid #D6DAE1;padding:12px 13px;
     display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px;align-items:start}
   .sec.collapsed .secbody{display:none}
 
-  .card{background:var(--panel);border:1px solid var(--line2);border-radius:6px;padding:12px 13px}
+  .card{background:var(--panel);border:1px solid var(--line2);border-radius:6px;padding:12px 13px;
+    box-shadow:0 1px 2px rgba(20,24,34,.05)}
   .cname{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
   .cname .nm{font-weight:600;font-size:13px;word-break:break-all}
   .badge{font-size:10px;font-weight:600;padding:2px 7px;border-radius:4px;white-space:nowrap;background:#E6E8EC;color:var(--mut)}
   .badge.ok{background:var(--okbg);color:var(--ok)}
   .kv{display:flex;gap:11px;font-size:12px;margin-top:6px}
-  .kv .k{font-size:10px;text-transform:uppercase;letter-spacing:.05em;font-weight:600;color:#8A9099;
+  .kv .k{font-size:10px;text-transform:uppercase;letter-spacing:.05em;font-weight:600;color:#5F6670;
     min-width:60px;flex:0 0 auto;padding-top:1px}
   .kv .v{color:var(--fg2);flex:1;min-width:0}
   /* 코드형(command/args/env/path/tools 등): mono, 단어 경계 우선 줄바꿈(break-all 금지). */
   .kv .v.code{font-family:var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}
   /* 서술형(desc/description/설명/summary): sans, N줄 클램프(기본 4). */
-  .kv .v.desc{font-family:var(--sans);white-space:normal;word-break:normal;overflow-wrap:anywhere;
+  .kv .v.desc{font-family:var(--sans);color:#3B3F46;white-space:normal;word-break:normal;overflow-wrap:anywhere;
     display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:var(--desc-lines,4);overflow:hidden}
 
   /* inline edit */
@@ -155,9 +159,10 @@
   .cmpbar select{background:var(--panel);border:1px solid #DDE0E5;border-radius:6px;padding:6px 11px;
     font-size:12px;font-family:var(--mono);color:var(--fg);max-width:300px;cursor:pointer}
 
-  /* history timeline */
-  .timeline{position:relative;padding-left:7px;margin-top:12px}
-  .timeline .spine{position:absolute;left:12px;top:16px;bottom:16px;width:2px;background:var(--line2)}
+  /* history timeline: 고정 높이 스크롤(.rev-list) 안에 relative 트랙(.rev-track) — spine 이 스크롤과 함께 늘어남 */
+  .rev-list{max-height:340px;overflow-y:auto;overflow-x:hidden;margin-top:12px}
+  .rev-track{position:relative;padding-left:7px}
+  .rev-track .spine{position:absolute;left:12px;top:16px;bottom:16px;width:2px;background:var(--line2)}
   .rev{display:flex;align-items:flex-start;gap:12px;padding:11px 11px 11px 4px;border-radius:6px;
     cursor:pointer;position:relative;margin-bottom:2px}
   .rev.sel{background:var(--panel);box-shadow:0 0 0 1px var(--accent)}
@@ -165,7 +170,8 @@
     border:2px solid #CDD2D9;box-shadow:0 0 0 3px #FAFAFB}
   .rev.sel .rdot{background:var(--accent);border-color:var(--accent)}
   .rbody{flex:1;min-width:0}
-  .rmsg{font-size:13px;font-weight:600;color:#23262C}
+  .rmsg{font-size:13px;font-weight:600;color:#23262C;display:-webkit-box;-webkit-line-clamp:2;
+    -webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;line-height:1.35}
   .rmeta{font-family:var(--mono);font-size:11px;color:var(--mut2);margin-top:2px}
   .rrestore{border:1px solid #DDE0E5;background:var(--panel);color:var(--mut);border-radius:5px;
     padding:3px 10px;font-size:11px;flex:0 0 auto}
@@ -188,6 +194,26 @@
 
   .empty{color:var(--mut2);font-style:italic;padding:8px 0;font-size:13px}
   .empty.err{color:var(--del);font-style:normal;word-break:break-all}
+
+  /* display settings popover */
+  .setwrap{position:relative;display:inline-flex}
+  .hbtns button.open{border-color:var(--accent);color:var(--accent);background:#F4F6FE}
+  .setpop{position:absolute;top:40px;right:0;width:236px;background:var(--panel);border:1px solid #CAD0D9;
+    border-radius:8px;box-shadow:0 8px 24px rgba(20,24,34,.14);padding:13px 15px;z-index:70}
+  .setpop .sp-title{font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--mut);
+    font-weight:600;margin-bottom:11px}
+  .sp-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px}
+  .sp-lbl{font-size:12px;color:var(--fg2);flex:0 0 auto}
+  .sp-val{font-family:var(--mono);font-size:11px;color:var(--mut);width:16px;text-align:right}
+  .swatches{display:flex;gap:7px}
+  .hbtns .setpop .swatch{width:21px;height:21px;min-width:0;border-radius:50%;border:none;padding:0;
+    cursor:pointer;flex:0 0 auto}
+  .hbtns .setpop .swatch:hover{border:none;filter:brightness(1.12)}
+  .hbtns .setpop .swatch.sel{box-shadow:0 0 0 2px var(--panel),0 0 0 4px var(--accent)}
+  .setpop input[type=checkbox]{width:32px;height:18px;accent-color:var(--accent);cursor:pointer;margin:0}
+  .setpop input[type=range]{flex:1;min-width:0;accent-color:var(--accent);cursor:pointer}
+  #setpop-backdrop{position:fixed;inset:0;z-index:65;background:transparent}
+  body.nosrc .secsrc{display:none}
 
   /* toast */
   #toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:#15171C;color:#fff;
@@ -221,6 +247,25 @@
         <button id="open-browser" title="브라우저에서 열기">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
         </button>
+        <span class="setwrap">
+          <button id="settings" title="표시 설정">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h0a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h0a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v0a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg>
+          </button>
+          <div id="setpop" hidden class="setpop">
+            <div class="sp-title">표시 설정</div>
+            <div class="sp-row"><span class="sp-lbl">강조 색상</span>
+              <div class="swatches">
+                <button class="swatch sel" data-c="#2B5CE6" style="background:#2B5CE6" title="#2B5CE6"></button>
+                <button class="swatch" data-c="#0E7C66" style="background:#0E7C66" title="#0E7C66"></button>
+                <button class="swatch" data-c="#5A4FCF" style="background:#5A4FCF" title="#5A4FCF"></button>
+                <button class="swatch" data-c="#C2410C" style="background:#C2410C" title="#C2410C"></button>
+              </div></div>
+            <div class="sp-row"><span class="sp-lbl">출처 경로 표시</span>
+              <input type="checkbox" id="opt-src" checked></div>
+            <div class="sp-row"><span class="sp-lbl">설명 줄 수</span>
+              <input type="range" id="opt-lines" min="2" max="10" value="4"><span class="sp-val" id="opt-lines-val">4</span></div>
+          </div>
+        </span>
         <button id="fullscreen" class="primary" title="전체화면">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
           <span class="blabel" id="fullscreen-label">전체화면</span>

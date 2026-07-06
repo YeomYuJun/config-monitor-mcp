@@ -3,7 +3,10 @@
     "config-monitor": {
       "command": "npx",
       "args": ["tsx", "<ABSOLUTE_PATH_TO>/config-monitor-mcp/src/server-stdio.ts"],
-      "env": { "CLAUDE_SNAPSHOT_STORE": "<ABSOLUTE_PATH_TO>/.claude-snapshot" }
+      "env": {
+        "CLAUDE_SNAPSHOT_STORE": "<ABSOLUTE_PATH_TO>/.claude-snapshot",
+        "CLAUDE_CONFIG_LIBRARIES": "<ABSOLUTE_PATH_TO>/my-library/.claude"
+      }
     },
     "_config-monitor-http-alt": {
       "type": "http",

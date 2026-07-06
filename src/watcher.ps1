@@ -31,35 +31,52 @@ if (-not (Test-Path $ConfigPath)) {
 
 $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 
-# tracked 항목에서 감시할 디렉토리 집합 도출 (파일이면 부모, 디렉토리/glob 이면 베이스 디렉토리)
-$dirs = New-Object System.Collections.Generic.HashSet[string]
+# tracked 항목 -> 감시 스펙 집합.
+#   파일      : 부모 디렉토리 + 파일명 Filter, 비재귀  (홈 디렉토리 전체 재귀 감시로 인한
+#               이벤트 폭주를 막는다 — .claude.json 하나 때문에 ~ 전체를 볼 이유가 없다)
+#   디렉토리  : 그 디렉토리, 재귀
+#   glob/부재 : 베이스 디렉토리, 재귀
+$specs = @{}
 foreach ($t in $config.tracked) {
   $expanded = [Environment]::ExpandEnvironmentVariables($t)
   if (Test-Path $expanded -PathType Container) {
-    [void]$dirs.Add((Resolve-Path $expanded).Path)
+    $d = (Resolve-Path $expanded).Path
+    $specs["$d|*"] = @{ Dir = $d; Filter = "*"; Recurse = $true }
   } elseif (Test-Path $expanded -PathType Leaf) {
-    [void]$dirs.Add((Split-Path -Parent (Resolve-Path $expanded).Path))
+    $f = (Resolve-Path $expanded).Path
+    $d = Split-Path -Parent $f
+    $n = Split-Path -Leaf $f
+    $specs["$d|$n"] = @{ Dir = $d; Filter = $n; Recurse = $false }
   } else {
     # glob 또는 미존재: 와일드카드/파일명 앞의 디렉토리 부분만 추출
     $base = Split-Path -Parent $expanded
-    if ($base -and (Test-Path $base -PathType Container)) { [void]$dirs.Add((Resolve-Path $base).Path) }
+    if ($base -and (Test-Path $base -PathType Container)) {
+      $d = (Resolve-Path $base).Path
+      $specs["$d|*"] = @{ Dir = $d; Filter = "*"; Recurse = $true }
+    }
   }
 }
 
-if ($dirs.Count -eq 0) {
+if ($specs.Count -eq 0) {
   Write-Host "감시할 디렉토리를 찾지 못함. config.tracked 를 확인하세요." -ForegroundColor Yellow
   exit 1
 }
+
+# 상태 표시용 디스크립터(파일 필터가 있으면 전체 경로로 보이게)
+$dirs = @($specs.Values | ForEach-Object {
+  if ($_.Filter -ne "*") { Join-Path $_.Dir $_.Filter } else { $_.Dir }
+})
 
 Write-Host "watcher 시작 - 저장소: $Store" -ForegroundColor Cyan
 $dirs | ForEach-Object { Write-Host "  감시: $_" }
 
 # 상태 파일: MCP 서버의 watcher_status 가 살아있음/heartbeat 를 판단하는 근거.
 $StatePath = Join-Path $Store "watcher.json"
+$StartedAt = (Get-Date).ToString("o")   # started 는 기동 시각 고정(heartbeat 와 분리)
 function Write-WatcherState([string]$lastEvent) {
   $state = [ordered]@{
     pid        = $PID
-    started    = (Get-Date).ToString("o")
+    started    = $StartedAt
     heartbeat  = (Get-Date).ToString("o")
     debounceMs = $DebounceMs
     dirs       = @($dirs)
@@ -81,9 +98,10 @@ $action = {
 }
 
 $watchers = @()
-foreach ($d in $dirs) {
-  $fsw = New-Object System.IO.FileSystemWatcher $d
-  $fsw.IncludeSubdirectories = $true
+foreach ($s in $specs.Values) {
+  $fsw = New-Object System.IO.FileSystemWatcher $s.Dir
+  $fsw.Filter = $s.Filter
+  $fsw.IncludeSubdirectories = $s.Recurse
   $fsw.EnableRaisingEvents = $true
   $fsw.NotifyFilter = [System.IO.NotifyFilters]'FileName, LastWrite, DirectoryName'
   Register-ObjectEvent $fsw Created -Action $action | Out-Null

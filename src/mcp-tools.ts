@@ -230,13 +230,126 @@ export function buildTools(scriptDir: string): ToolDef[] {
       meta: {
         title: "Scaffold Code Skill",
         description: "~/.claude/skills/<name>/SKILL.md 스캐폴드 생성",
-        inputSchema: z.object({ name: z.string(), desc: z.string().optional() }), annotations: EDIT,
+        inputSchema: z.object({
+          name: z.string(), desc: z.string().optional(),
+          content: z.string().optional().describe("SKILL.md 전체 내용(frontmatter 포함). 지정 시 스텁 대신 그대로 설치"),
+        }), annotations: EDIT,
       },
-      run: async (a: { name: string; desc?: string }) => {
+      run: async (a: { name: string; desc?: string; content?: string }) => {
         const args = ["skill-scaffold", a.name];
         if (a.desc) args.push("--desc", a.desc);
+        if (a.content) args.push("--content", a.content);
         return jsonResult(await runPy("config_edit.py", args));
       },
+    },
+    {
+      name: "config_skill_remove",
+      meta: {
+        title: "Remove Code Skill",
+        description: "~/.claude/skills/<name> 을 .trash 로 이동(복구 가능). 편집 전 스냅샷",
+        inputSchema: z.object({ name: z.string() }), annotations: EDIT,
+      },
+      run: async (a: { name: string }) => jsonResult(await runPy("config_edit.py", ["skill-remove", a.name])),
+    },
+    {
+      name: "config_agent_add",
+      meta: {
+        title: "Scaffold Agent",
+        description: "~/.claude/agents/<name>.md 에이전트 생성. content 로 전체 정의(frontmatter 포함) 설치 가능, 없으면 desc/tools/model 스캐폴드",
+        inputSchema: z.object({
+          name: z.string(), desc: z.string().optional(),
+          tools: z.string().optional(), model: z.string().optional(),
+          content: z.string().optional().describe("에이전트 md 전체 내용(frontmatter 포함). 지정 시 desc/tools/model 무시"),
+        }), annotations: EDIT,
+      },
+      run: async (a: { name: string; desc?: string; tools?: string; model?: string; content?: string }) => {
+        const args = ["agent-scaffold", a.name];
+        if (a.desc) args.push("--desc", a.desc);
+        if (a.tools) args.push("--tools", a.tools);
+        if (a.model) args.push("--model", a.model);
+        if (a.content) args.push("--content", a.content);
+        return jsonResult(await runPy("config_edit.py", args));
+      },
+    },
+    {
+      name: "config_agent_remove",
+      meta: {
+        title: "Remove Agent",
+        description: "~/.claude/agents/<name>(.md) 을 .trash 로 이동(복구 가능). 편집 전 스냅샷",
+        inputSchema: z.object({ name: z.string() }), annotations: EDIT,
+      },
+      run: async (a: { name: string }) => jsonResult(await runPy("config_edit.py", ["agent-remove", a.name])),
+    },
+    {
+      name: "config_mcp_add",
+      meta: {
+        title: "Add/Update MCP Server",
+        description: "mcpServers.<name> 추가/갱신. scope=user 는 ~/.claude.json, scope=desktop 은 claude_desktop_config.json(적용은 Desktop 재시작 필요). 스냅샷+.bak+atomic",
+        inputSchema: z.object({
+          name: z.string(),
+          serverJson: z.string().describe('서버 설정 JSON 문자열, 예: {"command":"npx","args":["-y","some-mcp"]}'),
+          scope: z.enum(["user", "desktop"]).optional(),
+        }), annotations: EDIT,
+      },
+      run: async (a: { name: string; serverJson: string; scope?: string }) =>
+        jsonResult(await runPy("config_edit.py",
+          ["mcp-add", a.name, "--json", a.serverJson, "--scope", a.scope || "user"])),
+    },
+    {
+      name: "config_mcp_remove",
+      meta: {
+        title: "Remove MCP Server",
+        description: "mcpServers.<name> 제거. scope=user|desktop (desktop 적용은 재시작 필요). 스냅샷+.bak+atomic",
+        inputSchema: z.object({ name: z.string(), scope: z.enum(["user", "desktop"]).optional() }), annotations: EDIT,
+      },
+      run: async (a: { name: string; scope?: string }) =>
+        jsonResult(await runPy("config_edit.py", ["mcp-remove", a.name, "--scope", a.scope || "user"])),
+    },
+
+    // ----- 라이브러리 토글 (.claude 구조 라이브러리 디렉토리) -----
+    {
+      name: "library_scan",
+      meta: {
+        title: "Scan Personal Library",
+        description: "라이브러리(.claude 구조, CLAUDE_CONFIG_LIBRARIES env 또는 등록분)의 agents/skills/commands 를 열거하고 라이브 설정과 해시 비교해 3상태(not_installed/installed/modified) 반환. lib 지정 시 신규 등록 후 스캔",
+        inputSchema: z.object({ lib: z.string().optional().describe("라이브러리 루트 경로(.claude 구조 디렉토리). 최초 1회 등록용") }),
+        annotations: READ,
+      },
+      run: async (a: { lib?: string }) => {
+        const args = ["scan"];
+        if (a.lib) args.push("--lib", a.lib);
+        return jsonResult(await runPy("library.py", args));
+      },
+    },
+    {
+      name: "library_install",
+      meta: {
+        title: "Install Library Item",
+        description: "라이브러리 항목을 ~/.claude 에 설치/동기화. 기존 항목 존재 시 스냅샷+.bak(파일)/.trash(디렉토리) 후 라이브러리 버전으로 덮어씀",
+        inputSchema: z.object({
+          category: z.enum(["agents", "skills", "commands"]),
+          name: z.string(),
+          lib: z.string().optional(),
+        }), annotations: EDIT,
+      },
+      run: async (a: { category: string; name: string; lib?: string }) => {
+        const args = ["install", a.category, a.name];
+        if (a.lib) args.push("--lib", a.lib);
+        return jsonResult(await runPy("library.py", args));
+      },
+    },
+    {
+      name: "library_uninstall",
+      meta: {
+        title: "Uninstall Library Item",
+        description: "~/.claude 의 해당 항목을 .trash 로 이동(복구 가능). 라이브러리 원본은 건드리지 않음",
+        inputSchema: z.object({
+          category: z.enum(["agents", "skills", "commands"]),
+          name: z.string(),
+        }), annotations: EDIT,
+      },
+      run: async (a: { category: string; name: string }) =>
+        jsonResult(await runPy("library.py", ["uninstall", a.category, a.name])),
     },
 
     // ----- 브라우저 열기 -----

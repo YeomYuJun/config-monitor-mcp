@@ -2,7 +2,7 @@
 r"""
 claude_config.py - Claude 설정 introspection + 카드 HTML 생성기 (v2, 7 카테고리)
 
-대상 (당신 PC 실측 경로):
+대상 경로:
   ~\.claude.json                                  Claude Code 전역 (관심 키만 추출 + 마스킹)
   ~\.claude\settings.json                         permission allow/deny + hooks
   ~\.claude\skills\*                              Code 스킬
@@ -111,7 +111,7 @@ def parse(found):
     state = {"generated": datetime.now().isoformat(), "sources": found, "sections": []}
     add = state["sections"].append
 
-    # 1) Desktop MCP servers
+    # 1) Desktop MCP servers (카드 단위 제거 + 섹션 add 카드)
     cards = []
     dc = found.get("desktop_config")
     if dc and os.path.exists(dc):
@@ -121,7 +121,10 @@ def parse(found):
                 ("command", cfg.get("command", "-")),
                 ("args", " ".join(cfg.get("args", [])) or "-"),
                 ("env", ", ".join((cfg.get("env") or {}).keys()) or "-"),
-            ], badge="stdio" if cfg.get("command") else cfg.get("type", "?"), ok=True))
+            ], badge="stdio" if cfg.get("command") else cfg.get("type", "?"), ok=True,
+               edit={"kind": "mcp", "scope": "desktop", "name": name}))
+        cards.append(card("＋ 새 MCP 서버", [("형식", 'name {"command":"npx","args":[...]}')],
+                          badge="add", edit={"kind": "mcp-add", "scope": "desktop"}))
     add({"title": f"MCP Servers (desktop) · {len(cards)}", "source": dc, "cards": cards})
 
     # 2) Claude Code 전역 (.claude.json, 관심 키만)
@@ -140,6 +143,16 @@ def parse(found):
                 ("account", "set" if data.get("oauthAccount") else "-"),
                 ("dropped", "history(노이즈) 제외 · 민감키 마스킹"),
             ], badge="claude.json", ok=True))
+            # 전역 mcpServers 를 카드 단위로 노출(제거 가능) + add 카드
+            for name, cfg in (data.get("mcpServers") or {}).items():
+                cfg = cfg or {}
+                cards.append(card(name, [
+                    ("command", cfg.get("command", "-")),
+                    ("args", " ".join(cfg.get("args", [])) or "-"),
+                ], badge="global mcp", ok=True,
+                   edit={"kind": "mcp", "scope": "user", "name": name}))
+            cards.append(card("＋ 새 전역 MCP 서버", [("형식", 'name {"command":"npx","args":[...]}')],
+                              badge="add", edit={"kind": "mcp-add", "scope": "user"}))
             for path, pj in list(projects.items())[:20]:
                 pj = pj or {}
                 cards.append(card(os.path.basename(path.rstrip("/\\")) or path, [
@@ -170,32 +183,43 @@ def parse(found):
     add({"title": f"Permissions · {len(perm_cards)}", "source": cs, "cards": perm_cards})
     add({"title": f"Hooks · {len(hook_cards)}", "source": cs, "cards": hook_cards})
 
-    # 5) Code Skills
+    # 5) Code Skills (.trash 등 숨김 디렉토리 제외, 카드 단위 제거 + add 카드)
     cards = []
     sd = found.get("skills_dir")
     if sd and os.path.isdir(sd):
         for name in sorted(os.listdir(sd)):
+            if name.startswith("."):
+                continue
             full = os.path.join(sd, name)
             if os.path.isdir(full):
                 has_md = os.path.exists(os.path.join(full, "SKILL.md"))
                 meta = read_frontmatter(os.path.join(full, "SKILL.md")) if has_md else {}
                 cards.append(card(name, [("desc", meta.get("description", "-")), ("path", full)],
-                                  badge="SKILL.md" if has_md else "no md", ok=has_md))
+                                  badge="SKILL.md" if has_md else "no md", ok=has_md,
+                                  edit={"kind": "skill", "name": name}))
+        cards.append(card("＋ 새 스킬", [("형식", "name 설명…")],
+                          badge="add", edit={"kind": "skill-add"}))
     add({"title": f"Skills (code) · {len(cards)}", "source": sd, "cards": cards})
 
-    # 6) Agents
+    # 6) Agents (.trash 제외, 카드 단위 제거 + add 카드)
     cards = []
     ad = found.get("agents_dir")
     if ad and os.path.isdir(ad):
         for name in sorted(os.listdir(ad)):
+            if name.startswith("."):
+                continue
             full = os.path.join(ad, name)
             md = full if name.endswith(".md") else os.path.join(full, "AGENT.md")
             meta = read_frontmatter(md) if os.path.exists(md) else {}
+            # 제거 op 는 파일시스템 이름 기준(.md 제거) — frontmatter name 과 다를 수 있음
+            fs_name = name[:-3] if name.endswith(".md") else name
             cards.append(card(meta.get("name", name), [
                 ("desc", meta.get("description", "-")),
                 ("tools", meta.get("tools", "-")),
                 ("path", full),
-            ], badge="agent"))
+            ], badge="agent", edit={"kind": "agent", "name": fs_name}))
+        cards.append(card("＋ 새 에이전트", [("형식", "name 설명…")],
+                          badge="add", edit={"kind": "agent-add"}))
     add({"title": f"Agents · {len(cards)}", "source": ad, "cards": cards})
 
     # 7) Scheduled tasks

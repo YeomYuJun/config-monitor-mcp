@@ -13,7 +13,7 @@ git 과 다른 점:
   3) index 에 없는 경로 = 신규, 워킹트리에 없는데 index 에 있으면 = 삭제.
 """
 from __future__ import annotations
-import argparse, json, os, sys, zlib, hashlib, glob as globmod, difflib
+import argparse, json, os, re, sys, zlib, hashlib, glob as globmod, difflib
 from datetime import datetime
 
 # Windows 콘솔 기본 인코딩(cp949)에서 한글/em-dash 출력 시 UnicodeEncodeError 방지.
@@ -26,6 +26,38 @@ for _s in (sys.stdout, sys.stderr):
 DEFAULT_STORE = os.environ.get("CLAUDE_SNAPSHOT_STORE") or (
     "D:\\.claude-snapshot" if os.name == "nt" else os.path.expanduser("~/.claude-snapshot")
 )
+
+# 존재하면 자동 추적할 기본 대상. untrack 으로 명시 제외한 항목(ignore_defaults)은 다시 넣지 않는다.
+# CLAUDE_CAS_NO_DEFAULT_TRACK=1 이면 병합 자체를 끈다(테스트/특수 상황용).
+_HOME = os.path.expanduser("~")
+DEFAULT_TRACKED = [
+    os.path.join(_HOME, ".claude.json"),
+    os.path.join(_HOME, ".claude", "settings.json"),
+    os.path.join(os.environ.get("APPDATA", os.path.join(_HOME, "AppData", "Roaming")),
+                 "Claude", "claude_desktop_config.json"),
+]
+
+def _parse_iso(s):
+    """PowerShell round-trip('o') 포맷은 소수부가 7자리라 Python<3.11 fromisoformat 이 못 읽는다.
+    소수부를 마이크로초(6자리)로 잘라 파싱. (예: .1970395+09:00 -> .197039+09:00)"""
+    return datetime.fromisoformat(re.sub(r"(\.\d{6})\d+", r"\1", str(s)))
+
+def load_config(p):
+    """config.json 로드 + DEFAULT_TRACKED 병합(존재하는 파일만, ignore_defaults 제외).
+    병합으로 바뀌었고 store 가 이미 초기화돼 있으면 즉시 영속화."""
+    config = load_json(p["config"], {"version": 1, "tracked": []})
+    if os.environ.get("CLAUDE_CAS_NO_DEFAULT_TRACK") == "1":
+        return config
+    tracked = config.setdefault("tracked", [])
+    ignored = set(config.get("ignore_defaults", []))
+    changed = False
+    for d in DEFAULT_TRACKED:
+        if d not in tracked and d not in ignored and os.path.isfile(d):
+            tracked.append(d)
+            changed = True
+    if changed and os.path.isdir(p["store"]):
+        save_json(p["config"], config)
+    return config
 
 def store_paths(store):
     return {
@@ -151,12 +183,19 @@ def cmd_untrack(args):
     config = load_json(p["config"], {"version": 1, "tracked": []})
     before = len(config["tracked"])
     config["tracked"] = [t for t in config["tracked"] if t not in args.paths]
+    # 기본 추적 대상을 명시적으로 뺀 경우, load_config 의 자동 병합이 되살리지 않도록 기록.
+    ignored = set(config.get("ignore_defaults", []))
+    for t in args.paths:
+        if t in DEFAULT_TRACKED:
+            ignored.add(t)
+    if ignored:
+        config["ignore_defaults"] = sorted(ignored)
     save_json(p["config"], config)
     print(f"제거됨: {before - len(config['tracked'])}개")
 
 def cmd_status(args):
     p = store_paths(args.store)
-    config = load_json(p["config"], {"tracked": []})
+    config = load_config(p)
     index = load_json(p["index"], {})
     result, _ = scan(p, config, index, rehash=False)
     if args.json:  # 머신용: 순수 JSON 만
@@ -174,7 +213,7 @@ def cmd_status(args):
 
 def _take_snapshot(p, message, force=False):
     """스냅샷 코어. 새 스냅샷 id 를 반환(변경 없고 force 아니면 None). cmd_snapshot/cmd_restore 공용."""
-    config = load_json(p["config"], {"tracked": []})
+    config = load_config(p)
     index = load_json(p["index"], {})
     result, new_index = scan(p, config, index, rehash=True)
     changed = sum(len(result[k]) for k in ("new", "modified", "deleted"))
@@ -327,7 +366,7 @@ def cmd_watcher_status(args):
     stale = True
     err = None
     try:
-        hb = datetime.fromisoformat(str(st.get("heartbeat")))
+        hb = _parse_iso(st.get("heartbeat"))
         now = datetime.now(hb.tzinfo) if hb.tzinfo else datetime.now()  # tz-aware/naive 일치
         age = (now - hb).total_seconds()
         thresh = (st.get("debounceMs", 2000) / 1000.0) * 3 + 5
