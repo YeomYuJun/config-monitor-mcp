@@ -196,6 +196,19 @@
   .diffempty{border:1px dashed #D7DAE0;border-radius:6px;padding:22px;text-align:center;color:var(--mut2);
     font-size:13px;background:#FBFBFC;margin-top:12px}
 
+  /* 현재 파일 내용 뷰어 (읽기 전용, 기본 접힘) */
+  .curwrap{border:1px solid var(--line2);border-radius:6px;background:var(--panel);margin-top:24px;overflow:hidden}
+  .curhead{display:flex;align-items:center;gap:9px;padding:9px 13px;background:#F3F4F6;cursor:pointer;
+    font-family:var(--mono);font-size:11px;color:var(--mut);user-select:none}
+  .curhead:hover{background:#ECEEF2}
+  .curhead .chev3{display:inline-block;transition:transform .15s;font-size:10px}
+  .curwrap.open .curhead .chev3{transform:rotate(90deg)}
+  .curhead .rhint{margin-left:auto;color:var(--mut3)}
+  .curbody{display:none;max-height:420px;overflow:auto;border-top:1px solid var(--line2)}
+  .curwrap.open .curbody{display:block}
+  .curbody pre{margin:0;padding:12px 15px;font-family:var(--mono);font-size:12px;line-height:1.55;
+    white-space:pre-wrap;word-break:break-all;color:var(--fg2)}
+
   .empty{color:var(--mut2);font-style:italic;padding:8px 0;font-size:13px}
   .empty.err{color:var(--del);font-style:normal;word-break:break-all}
 

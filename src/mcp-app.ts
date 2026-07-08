@@ -506,6 +506,28 @@ function renderHistory(): void {
   const diffArea = document.createElement("div");
   diffArea.id = "diff-area";
   body.appendChild(diffArea);
+
+  // 현재 파일 내용 뷰어 — 기본 접힘, 첫 펼침 때 lazy 조회. 보기 전용(편집 아님).
+  const cur = document.createElement("div");
+  cur.className = "curwrap";
+  cur.innerHTML =
+    `<div class="curhead"><span class="chev3">▸</span><span>현재 파일 내용</span>` +
+    `<span class="rhint">읽기 전용</span></div>` +
+    `<div class="curbody"><pre>불러오는 중…</pre></div>`;
+  let curLoaded = false;
+  cur.querySelector(".curhead")!.addEventListener("click", async () => {
+    const open = cur.classList.toggle("open");
+    if (!open || curLoaded) return;
+    const pre = cur.querySelector("pre")!;
+    try {
+      const t = await callTool("get_file_content", { path: selectedPath });
+      pre.textContent = t || "(빈 파일)";
+      curLoaded = true;
+    } catch (e) {
+      pre.textContent = "조회 실패: " + String(e);
+    }
+  });
+  body.appendChild(cur);
 }
 
 async function renderDiffFor(): Promise<void> {

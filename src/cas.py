@@ -352,6 +352,18 @@ def cmd_show(args):
         print("index 에 없음"); return
     sys.stdout.buffer.write(read_object(p, h))
 
+def cmd_cat(args):
+    """추적 중인 파일의 현재 내용을 그대로 출력(읽기 전용 뷰어용).
+    추적 목록 밖 경로는 거부 — 임의 파일 읽기 통로가 되지 않게."""
+    p = store_paths(args.store)
+    config = load_config(p)
+    target = os.path.abspath(os.path.expanduser(args.path))
+    if target not in expand_tracked(config.get("tracked", [])):
+        print(json.dumps({"ok": False, "message": f"추적 중인 파일이 아님: {target}"}, ensure_ascii=False))
+        sys.exit(1)
+    with open(target, "rb") as f:
+        sys.stdout.write(f.read().decode("utf-8", "replace"))
+
 def cmd_watcher_status(args):
     """watcher.ps1 가 쓰는 watcher.json(heartbeat) 을 읽어 상주 여부를 판정.
     heartbeat 가 debounce 의 3배 + 5초 안이면 running, 아니면 stale(죽었거나 멈춤)."""
@@ -396,6 +408,7 @@ def main():
     sp = sub.add_parser("diff"); sp.add_argument("path")
     sp.add_argument("--from", dest="frm"); sp.add_argument("--to", dest="to"); sp.set_defaults(func=cmd_diff)
     sp = sub.add_parser("show"); sp.add_argument("path"); sp.set_defaults(func=cmd_show)
+    sp = sub.add_parser("cat"); sp.add_argument("path"); sp.set_defaults(func=cmd_cat)
     sub.add_parser("watcher-status").set_defaults(func=cmd_watcher_status)
     sp = sub.add_parser("restore"); sp.add_argument("path")
     sp.add_argument("--from", dest="frm", required=True, help="복원할 스냅샷 id")

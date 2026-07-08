@@ -85,6 +85,15 @@ export function buildTools(scriptDir: string): ToolDef[] {
       run: async (a: { path: string }) => jsonResult(await runPy("cas.py", ["history", a.path, "--json"])),
     },
     {
+      name: "get_file_content",
+      meta: {
+        title: "Get Current File Content",
+        description: "추적 중인 설정 파일의 현재 내용을 그대로 반환(읽기 전용 뷰어). 추적 목록 밖 경로는 거부",
+        inputSchema: z.object({ path: z.string().describe("추적 중인 파일의 절대경로") }), annotations: READ,
+      },
+      run: async (a: { path: string }) => text(await runPy("cas.py", ["cat", a.path])),
+    },
+    {
       name: "get_diff",
       meta: {
         title: "Get File Diff",

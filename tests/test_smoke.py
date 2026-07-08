@@ -89,6 +89,20 @@ class CasRoundTrip(unittest.TestCase):
         with open(self.target, encoding="utf-8") as f:
             self.assertEqual(f.read(), "v1 line A\nv1 line B\n")
 
+    def test_cat_tracked_only(self):
+        # cat: 추적 파일은 현재 내용 그대로, 추적 밖 경로는 거부.
+        self.cas("init")
+        self.cas("track", self.target)
+        rc, out, err = self.cas("cat", self.target)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "v1 line A\nv1 line B\n")
+        outside = os.path.join(self.tmp, "outside.txt")
+        with open(outside, "w") as f:
+            f.write("x")
+        rc, out, err = self.cas("cat", outside)
+        self.assertNotEqual(rc, 0)
+        self.assertFalse(json.loads(out)["ok"])
+
     def test_watcher_status_no_watcher(self):
         self.cas("init")
         rc, out, err = self.cas("watcher-status")
