@@ -20,6 +20,86 @@ const esc = (s: unknown) =>
 const DESC_KEYS = new Set(["desc", "description", "설명", "summary"]);
 const valClass = (k: string) => (DESC_KEYS.has(String(k).toLowerCase()) ? "desc" : "code");
 
+// ----- i18n (ko/en): UI 크롬 라벨만. 파일명/경로/설정 데이터/섹션 타이틀은 번역 대상 아님. -----
+const I18N: Record<string, Record<string, string>> = {
+  ko: {
+    newFile: "신규", modified: "수정", deleted: "삭제", unchanged: "동일",
+    snapshot: "스냅샷", refresh: "새로고침", report: "리포트", openBrowser: "브라우저에서 열기",
+    dispSettings: "표시 설정", accentColor: "강조 색상", showSources: "출처 경로 표시", descLines: "설명 표시 줄 수", linesSuffix: "줄",
+    fullscreen: "전체화면", windowed: "창 모드",
+    watcherOn: "watcher 실행 중", watcherOff: "watcher 정지",
+    trackedFiles: "추적 파일", clickHint: "클릭 → 이력 / diff",
+    settings: "설정", settingsHint: "8 카테고리 · 출처 경로 포함",
+    source: "출처", remove: "제거", del: "삭제", cancel: "취소", add: "추가",
+    permPlaceholder: "예: Bash(npm run*)", hookPlaceholder: "hook 명령어",
+    closePanel: "패널 닫기", openHistory: "이력 패널 열기", closeHistory: "이력 패널 닫기", historyDiff: "이력 / DIFF",
+    compareTo: "비교 대상", working: "작업본 (현재 파일)", workingShort: "작업본",
+    history: "변경 이력", restore: "복원", restoreConfirm: "복원확정", restoreTitle: "이 버전으로 복원", restoreNote: "현재 상태는 자동 스냅샷+백업",
+    noDiff: "선택한 두 버전 사이에 텍스트 변경이 없습니다.",
+    generatedPrefix: "추적 ", generatedMid: " · 최근 스냅샷 ",
+    toastAdded: "추가됨", toastRemoved: "제거됨", toastSnapshot: "스냅샷 생성됨", snapshotMsg: "스냅샷 (dashboard)",
+    toastRefreshed: "새로고침 완료", toastReport: "리포트 생성 중…", toastBrowser: "브라우저에서 열기",
+    toastWatcherStart: "watcher 시작", toastWatcherStop: "watcher 중지", toastRestored: "복원됨 · 현재 상태 자동 백업",
+    langTitle: "Switch to English",
+    failed: "실패", loading: "불러오는 중…", fetchFail: "조회 실패", unknown: "알 수 없음",
+    emptyTracked: "추적 파일 없음 - cas.py track 으로 추가", emptyCards: "항목 없음 / 파일 미발견",
+    noHistory: "스냅샷 이력 없음 (먼저 스냅샷)", emptyTrackedResp: "상태를 불러오지 못했습니다 (빈 응답)",
+    emptyConfigResp: "설정을 불러오지 못했습니다 (빈 응답)", trackedStatus: "추적 상태", deletedHash: "삭제됨",
+    delConfirm: "삭제확정", trashMoveHint: ".trash 로 이동(복구 가능)",
+    addNamePlaceholder: "name 설명…", needServerJson: "서버 JSON 필요: name {…}",
+    libSectionTitle: "Library (토글 설치)", libNotInstalled: "미설치", libInstalled: "설치됨", libModified: "변경됨",
+    libEmpty: "라이브러리 항목 없음", kitRef: "kit참조", done: "완료",
+    libInstall: "설치", libSync: "동기화", libSyncConfirm: "덮어쓰기 확정(백업됨)", libUninstallConfirm: "제거 확정(.trash)",
+    libUnregistered: "미등록", libPathPlaceholder: "라이브러리 경로 (.claude 구조 디렉토리)", libRegister: "등록", libRegistered: "라이브러리 등록됨",
+    curFileTitle: "현재 파일 내용", readOnly: "읽기 전용", emptyFile: "(빈 파일)", diffFetchFail: "diff 조회 실패",
+    restoring: "복원 중…", watcherErr: "watcher 상태 오류", stopped: "정지됨", ago: "전",
+    displayModeFail: "디스플레이 모드 변경 불가(호스트 미지원)",
+    toastReportOpened: "브라우저에서 리포트 열림", toastReportFail: "리포트 실패", toastTabOpened: "브라우저 탭 열림", toastOpenFail: "열기 실패",
+    collapseAll: "전부 접기", collapseAllTitle: "펼쳐진 설정 분류를 전부 접기",
+    selectFilePrompt: "파일 선택", selectFileHint: "왼쪽에서 추적 파일을 클릭하세요",
+  },
+  en: {
+    newFile: "New", modified: "Modified", deleted: "Deleted", unchanged: "Same",
+    snapshot: "Snapshot", refresh: "Refresh", report: "Report", openBrowser: "Open in browser",
+    dispSettings: "Display settings", accentColor: "Accent color", showSources: "Show source paths", descLines: "Description lines", linesSuffix: " lines",
+    fullscreen: "Fullscreen", windowed: "Exit fullscreen",
+    watcherOn: "watcher running", watcherOff: "watcher stopped",
+    trackedFiles: "Tracked files", clickHint: "click → history / diff",
+    settings: "Settings", settingsHint: "8 categories · with source paths",
+    source: "Source", remove: "Remove", del: "Delete", cancel: "Cancel", add: "Add",
+    permPlaceholder: "e.g. Bash(npm run*)", hookPlaceholder: "hook command",
+    closePanel: "Close panel", openHistory: "Open history panel", closeHistory: "Close history panel", historyDiff: "HISTORY / DIFF",
+    compareTo: "Compare with", working: "Working copy (current file)", workingShort: "working copy",
+    history: "Change history", restore: "Restore", restoreConfirm: "Confirm", restoreTitle: "Restore this version", restoreNote: "Current state is auto-snapshotted + backed up",
+    noDiff: "No text changes between the selected versions.",
+    generatedPrefix: "Tracking ", generatedMid: " · last snapshot ",
+    toastAdded: "Added", toastRemoved: "Removed", toastSnapshot: "Snapshot created", snapshotMsg: "snapshot (dashboard)",
+    toastRefreshed: "Refreshed", toastReport: "Generating report…", toastBrowser: "Opening in browser",
+    toastWatcherStart: "watcher started", toastWatcherStop: "watcher stopped", toastRestored: "Restored · current state backed up",
+    langTitle: "한국어로 전환",
+    failed: "Failed", loading: "Loading…", fetchFail: "fetch failed", unknown: "unknown",
+    emptyTracked: "No tracked files - add with cas.py track", emptyCards: "No items / file not found",
+    noHistory: "No snapshot history (snapshot first)", emptyTrackedResp: "Failed to load status (empty response)",
+    emptyConfigResp: "Failed to load settings (empty response)", trackedStatus: "tracked status", deletedHash: "deleted",
+    delConfirm: "Confirm delete", trashMoveHint: "Move to .trash (recoverable)",
+    addNamePlaceholder: "name description…", needServerJson: "Server JSON required: name {…}",
+    libSectionTitle: "Library (toggle install)", libNotInstalled: "Not installed", libInstalled: "Installed", libModified: "Modified",
+    libEmpty: "No library items", kitRef: "kit ref", done: "done",
+    libInstall: "Install", libSync: "Sync", libSyncConfirm: "Confirm overwrite (backed up)", libUninstallConfirm: "Confirm remove (.trash)",
+    libUnregistered: "Unregistered", libPathPlaceholder: "Library path (.claude-structured directory)", libRegister: "Register", libRegistered: "Library registered",
+    curFileTitle: "Current file content", readOnly: "Read-only", emptyFile: "(empty file)", diffFetchFail: "diff fetch failed",
+    restoring: "Restoring…", watcherErr: "watcher status error", stopped: "stopped", ago: "ago",
+    displayModeFail: "Cannot change display mode (host unsupported)",
+    toastReportOpened: "Report opened in browser", toastReportFail: "Report failed", toastTabOpened: "Browser tab opened", toastOpenFail: "Open failed",
+    collapseAll: "Collapse all", collapseAllTitle: "Collapse all expanded categories",
+    selectFilePrompt: "Select a file", selectFileHint: "Click a tracked file on the left",
+  },
+};
+
+let lang = "ko";
+try { if (localStorage.getItem("cm.lang") === "en") lang = "en"; } catch { /* iframe 에서 localStorage 차단될 수 있음 */ }
+const t = (k: string): string => (I18N[lang] || I18N.ko)[k] ?? k;
+
 async function callTool(name: string, args: Record<string, unknown> = {}): Promise<string> {
   if (STANDALONE) {
     const res = await fetch(`/api/tool/${name}`, {
@@ -69,7 +149,9 @@ function flashToast(msg: string): void {
 }
 
 // ----- tracked file rows -----
-const LABEL: Record<string, string> = { new: "신규", modified: "수정", deleted: "삭제", unchanged: "동일" };
+// 파일 상태 배지 라벨(현재 lang 반영). new/deleted 는 핸드오프 사전에 없어 newFile/deleted 키를 추가했다.
+const statusLabel = (st: string): string =>
+  (({ new: t("newFile"), modified: t("modified"), deleted: t("deleted"), unchanged: t("unchanged") } as Record<string, string>)[st] || st);
 function renderTracked(status: any): number {
   const host = $("tracked");
   host.innerHTML = "";
@@ -80,13 +162,13 @@ function renderTracked(status: any): number {
     for (const p of status[st] || []) rows.push([p, st]);
   }
   if (!rows.length) {
-    list.innerHTML = `<div class="empty">추적 파일 없음 - cas.py track 으로 추가</div>`;
+    list.innerHTML = `<div class="empty">${esc(t("emptyTracked"))}</div>`;
   }
   for (const [p, st] of rows) {
     const row = document.createElement("div");
     row.className = "file" + (p === selectedPath ? " sel" : "");
     row.innerHTML =
-      `<span class="fbadge ${st}">${LABEL[st] || st}</span>` +
+      `<span class="fbadge ${st}">${esc(statusLabel(st))}</span>` +
       `<div class="fmeta"><div class="fname">${esc(basename(p))}</div>` +
       `<div class="fdir">${esc(dirname(p))}</div></div>` +
       `<span class="chev">›</span>`;
@@ -118,7 +200,7 @@ function renderConfig(sections: any[]): void {
     const head = document.createElement("div");
     head.className = "sechead";
     const srcHtml = sec.source
-      ? `<div class="secsrc"><span class="lbl">출처</span><span class="val">${esc(sec.source)}</span></div>`
+      ? `<div class="secsrc"><span class="lbl">${esc(t("source"))}</span><span class="val">${esc(sec.source)}</span></div>`
       : "";
     head.innerHTML =
       `<div class="secrow"><span class="chev2">▾</span>` +
@@ -133,7 +215,7 @@ function renderConfig(sections: any[]): void {
     const body = document.createElement("div");
     body.className = "secbody";
     if (!(sec.cards || []).length) {
-      body.innerHTML = `<div class="empty">항목 없음 / 파일 미발견</div>`;
+      body.innerHTML = `<div class="empty">${esc(t("emptyCards"))}</div>`;
     }
     for (const c of sec.cards || []) {
       const card = document.createElement("div");
@@ -187,20 +269,20 @@ function buildEditUI(edit: any): HTMLElement {
     const x = document.createElement("button");
     x.className = "cx";
     x.textContent = "✕";
-    x.title = "제거";
+    x.title = t("remove");
     x.addEventListener("click", () => {
       const ok = document.createElement("button");
       ok.className = "ok";
-      ok.textContent = "삭제";
+      ok.textContent = t("del");
       const no = document.createElement("button");
       no.className = "no";
-      no.textContent = "취소";
+      no.textContent = t("cancel");
       chip.replaceChildren(txt, ok, no);
       no.addEventListener("click", () => wrap.replaceWith(buildEditUI(edit)));
       ok.addEventListener("click", async () => {
         ok.textContent = "…";
-        try { await doRemove(it); flashToast("제거됨 · " + it); await refresh(); }
-        catch (e) { ok.textContent = "실패"; console.error("[config-monitor] remove", e); }
+        try { await doRemove(it); flashToast(t("toastRemoved") + " · " + it); await refresh(); }
+        catch (e) { ok.textContent = t("failed"); console.error("[config-monitor] remove", e); }
       });
     });
     chip.append(txt, x);
@@ -211,16 +293,16 @@ function buildEditUI(edit: any): HTMLElement {
   const adder = document.createElement("div");
   adder.className = "adder";
   const input = document.createElement("input");
-  input.placeholder = isPerm ? "예: Bash(npm run*)" : "hook 명령어";
+  input.placeholder = isPerm ? t("permPlaceholder") : t("hookPlaceholder");
   const add = document.createElement("button");
   add.className = "addbtn";
-  add.textContent = "추가";
+  add.textContent = t("add");
   const submit = async () => {
     const v = input.value.trim();
     if (!v) return;
     add.textContent = "…";
-    try { await doAdd(v); flashToast("추가됨 · " + v); await refresh(); }
-    catch (e) { add.textContent = "실패"; console.error("[config-monitor] add", e); }
+    try { await doAdd(v); flashToast(t("toastAdded") + " · " + v); await refresh(); }
+    catch (e) { add.textContent = t("failed"); console.error("[config-monitor] add", e); }
   };
   add.addEventListener("click", submit);
   input.addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") submit(); });
@@ -240,25 +322,25 @@ function buildRemoveUI(edit: any): HTMLElement {
   wrap.className = "edit";
   const btn = document.createElement("button");
   btn.className = "cx";
-  btn.textContent = "✕ 제거";
-  btn.title = edit.kind === "mcp" ? `mcpServers.${edit.name} 제거 (${edit.scope})` : ".trash 로 이동(복구 가능)";
+  btn.textContent = "✕ " + t("remove");
+  btn.title = edit.kind === "mcp" ? `mcpServers.${edit.name} ${t("remove")} (${edit.scope})` : t("trashMoveHint");
   btn.addEventListener("click", () => {
     const ok = document.createElement("button");
     ok.className = "ok";
-    ok.textContent = "삭제확정";
+    ok.textContent = t("delConfirm");
     const no = document.createElement("button");
     no.className = "no";
-    no.textContent = "취소";
+    no.textContent = t("cancel");
     wrap.replaceChildren(ok, no);
     no.addEventListener("click", () => wrap.replaceWith(buildRemoveUI(edit)));
     ok.addEventListener("click", async () => {
       ok.textContent = "…";
       try {
         const res = jparse(await doRemove());
-        if (res && res.ok === false) { ok.textContent = "실패"; flashToast(res.message || "실패"); return; }
-        flashToast("제거됨 · " + edit.name);
+        if (res && res.ok === false) { ok.textContent = t("failed"); flashToast(res.message || t("failed")); return; }
+        flashToast(t("toastRemoved") + " · " + edit.name);
         await refresh();
-      } catch (e) { ok.textContent = "실패"; console.error("[config-monitor] remove", e); }
+      } catch (e) { ok.textContent = t("failed"); console.error("[config-monitor] remove", e); }
     });
   });
   wrap.appendChild(btn);
@@ -274,10 +356,10 @@ function buildAddUI(edit: any): HTMLElement {
   const adder = document.createElement("div");
   adder.className = "adder";
   const input = document.createElement("input");
-  input.placeholder = edit.kind === "mcp-add" ? 'name {"command":"npx","args":[...]}' : "name 설명…";
+  input.placeholder = edit.kind === "mcp-add" ? 'name {"command":"npx","args":[...]}' : t("addNamePlaceholder");
   const add = document.createElement("button");
   add.className = "addbtn";
-  add.textContent = "추가";
+  add.textContent = t("add");
   const submit = async () => {
     const v = input.value.trim();
     if (!v) return;
@@ -288,17 +370,17 @@ function buildAddUI(edit: any): HTMLElement {
     try {
       let res: any;
       if (edit.kind === "mcp-add") {
-        if (!rest) { flashToast("서버 JSON 필요: name {…}"); add.textContent = "추가"; return; }
+        if (!rest) { flashToast(t("needServerJson")); add.textContent = t("add"); return; }
         res = jparse(await callTool("config_mcp_add", { name, serverJson: rest, scope: edit.scope }));
       } else if (edit.kind === "skill-add") {
         res = jparse(await callTool("skill_scaffold", { name, desc: rest || undefined }));
       } else {
         res = jparse(await callTool("config_agent_add", { name, desc: rest || undefined }));
       }
-      if (res && res.ok === false) { add.textContent = "실패"; flashToast(res.message || "실패"); return; }
-      flashToast("추가됨 · " + name);
+      if (res && res.ok === false) { add.textContent = t("failed"); flashToast(res.message || t("failed")); return; }
+      flashToast(t("toastAdded") + " · " + name);
       await refresh();
-    } catch (e) { add.textContent = "실패"; console.error("[config-monitor] add", e); }
+    } catch (e) { add.textContent = t("failed"); console.error("[config-monitor] add", e); }
   };
   add.addEventListener("click", submit);
   input.addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") submit(); });
@@ -308,11 +390,8 @@ function buildAddUI(edit: any): HTMLElement {
 }
 
 // ----- Library section (라이브러리 토글: /plugin 식 설치/제거) -----
-const LIB_STATUS: Record<string, [string, string]> = {
-  not_installed: ["미설치", ""],
-  installed: ["설치됨", "ok"],
-  modified: ["변경됨", "warn"],
-};
+const libStatus = (s: string): [string, string] =>
+  (({ not_installed: [t("libNotInstalled"), ""], installed: [t("libInstalled"), "ok"], modified: [t("libModified"), "warn"] } as Record<string, [string, string]>)[s] || [s, ""]);
 
 function renderLibrary(host: HTMLElement, res: any): void {
   const secEl = document.createElement("div");
@@ -330,9 +409,9 @@ function renderLibrary(host: HTMLElement, res: any): void {
   head.className = "sechead";
   head.innerHTML =
     `<div class="secrow"><span class="chev2">▾</span>` +
-    `<span class="sectitle">Library (토글 설치)</span>` +
+    `<span class="sectitle">${esc(t("libSectionTitle"))}</span>` +
     `<span class="seccount">${items.length}</span></div>` +
-    (libs.length ? `<div class="secsrc"><span class="lbl">출처</span><span class="val">${esc(libs.map((l: any) => l.lib).join(" · "))}</span></div>` : "");
+    (libs.length ? `<div class="secsrc"><span class="lbl">${esc(t("source"))}</span><span class="val">${esc(libs.map((l: any) => l.lib).join(" · "))}</span></div>` : "");
   head.addEventListener("click", () => {
     if (collapsed.has("Library")) collapsed.delete("Library"); else collapsed.add("Library");
     secEl.classList.toggle("collapsed");
@@ -341,14 +420,14 @@ function renderLibrary(host: HTMLElement, res: any): void {
 
   const body = document.createElement("div");
   body.className = "secbody";
-  if (!items.length) body.innerHTML = `<div class="empty">라이브러리 항목 없음</div>`;
+  if (!items.length) body.innerHTML = `<div class="empty">${esc(t("libEmpty"))}</div>`;
   for (const it of items) {
-    const [label, cls] = LIB_STATUS[it.status] || [it.status, ""];
+    const [label, cls] = libStatus(it.status);
     const row = document.createElement("div");
     row.className = "card";
     row.innerHTML =
       `<div class="cname"><span class="nm">${esc(it.category)} / ${esc(it.name)}</span>` +
-      `<span class="badge ${cls === "ok" ? "ok" : ""}">${esc(label)}${it.kit_ref ? " · kit참조" : ""}</span></div>`;
+      `<span class="badge ${cls === "ok" ? "ok" : ""}">${esc(label)}${it.kit_ref ? " · " + esc(t("kitRef")) : ""}</span></div>`;
     const act = document.createElement("div");
     act.className = "edit";
     const mkBtn = (txt: string, tool: string, confirmTxt?: string) => {
@@ -360,16 +439,16 @@ function renderLibrary(host: HTMLElement, res: any): void {
         b.textContent = "…";
         try {
           const r = jparse(await callTool(tool, { category: it.category, name: it.name }));
-          if (r && r.ok === false) { flashToast(r.message || "실패"); b.textContent = "실패"; return; }
-          flashToast(`${txt} 완료 · ${it.name}`);
+          if (r && r.ok === false) { flashToast(r.message || t("failed")); b.textContent = t("failed"); return; }
+          flashToast(`${txt} ${t("done")} · ${it.name}`);
           await refresh();
-        } catch (e) { b.textContent = "실패"; console.error("[config-monitor] library", e); }
+        } catch (e) { b.textContent = t("failed"); console.error("[config-monitor] library", e); }
       });
       return b;
     };
-    if (it.status === "not_installed") act.appendChild(mkBtn("설치", "library_install"));
-    if (it.status === "modified") act.appendChild(mkBtn("동기화", "library_install", "덮어쓰기 확정(백업됨)"));
-    if (it.status !== "not_installed") act.appendChild(mkBtn("제거", "library_uninstall", "제거 확정(.trash)"));
+    if (it.status === "not_installed") act.appendChild(mkBtn(t("libInstall"), "library_install"));
+    if (it.status === "modified") act.appendChild(mkBtn(t("libSync"), "library_install", t("libSyncConfirm")));
+    if (it.status !== "not_installed") act.appendChild(mkBtn(t("remove"), "library_uninstall", t("libUninstallConfirm")));
     row.appendChild(act);
     body.appendChild(row);
   }
@@ -389,22 +468,22 @@ async function refreshLibrary(): Promise<void> {
   secEl.className = "sec";
   secEl.innerHTML =
     `<div class="sechead"><div class="secrow"><span class="chev2">▾</span>` +
-    `<span class="sectitle">Library (토글 설치)</span><span class="seccount">미등록</span></div></div>`;
+    `<span class="sectitle">${esc(t("libSectionTitle"))}</span><span class="seccount">${esc(t("libUnregistered"))}</span></div></div>`;
   const body = document.createElement("div");
   body.className = "secbody";
   const adder = document.createElement("div");
   adder.className = "adder";
   const input = document.createElement("input");
-  input.placeholder = "라이브러리 경로 (.claude 구조 디렉토리)";
+  input.placeholder = t("libPathPlaceholder");
   const btn = document.createElement("button");
   btn.className = "addbtn";
-  btn.textContent = "등록";
+  btn.textContent = t("libRegister");
   btn.addEventListener("click", async () => {
     const v = input.value.trim();
     if (!v) return;
     btn.textContent = "…";
-    try { await callTool("library_scan", { lib: v }); flashToast("라이브러리 등록됨"); await refresh(); }
-    catch (e) { btn.textContent = "실패"; console.error("[config-monitor] lib register", e); }
+    try { await callTool("library_scan", { lib: v }); flashToast(t("libRegistered")); await refresh(); }
+    catch (e) { btn.textContent = t("failed"); console.error("[config-monitor] lib register", e); }
   });
   adder.append(input, btn);
   body.appendChild(adder);
@@ -431,7 +510,7 @@ async function selectFile(p: string): Promise<void> {
   document.querySelectorAll(".file").forEach((el) => el.classList.remove("sel"));
   pushCtx(`[Config Monitor] 사용자가 '${p}' 의 변경 이력을 보는 중.`);
   const body = $("panel-body");
-  body.innerHTML = `<div class="empty">불러오는 중…</div>`;
+  body.innerHTML = `<div class="empty">${esc(t("loading"))}</div>`;
   const h = jparseLast(await callTool("get_file_history", { path: p }));
   currentRevs = (h && h.revisions) || [];
   // 선택 행 다시 표시(refresh 없이 강조만)
@@ -440,7 +519,7 @@ async function selectFile(p: string): Promise<void> {
     if (fn === basename(p)) el.classList.add("sel");
   });
   if (!currentRevs.length) {
-    body.innerHTML = `<div class="empty">스냅샷 이력 없음 (먼저 스냅샷)</div>`;
+    body.innerHTML = `<div class="empty">${esc(t("noHistory"))}</div>`;
     return;
   }
   if (currentRevs.length) fromRev = currentRevs[currentRevs.length - 1].snapshot;
@@ -456,11 +535,11 @@ function renderHistory(): void {
   // 비교 대상 select
   const cmp = document.createElement("div");
   cmp.className = "cmpbar";
-  const opts = [`<option value="work">작업본 (현재 파일)</option>`]
+  const opts = [`<option value="work">${esc(t("working"))}</option>`]
     .concat(revsDesc.map((r) =>
       `<option value="${esc(r.snapshot)}">${esc(revTime(r).slice(5, 16))} · ${esc(r.message || "")}</option>`))
     .join("");
-  cmp.innerHTML = `<span class="dlabel">비교 대상</span><select id="cmp-to">${opts}</select>`;
+  cmp.innerHTML = `<span class="dlabel">${esc(t("compareTo"))}</span><select id="cmp-to">${opts}</select>`;
   body.appendChild(cmp);
   const sel = cmp.querySelector("#cmp-to") as HTMLSelectElement;
   sel.value = toRev;
@@ -469,7 +548,7 @@ function renderHistory(): void {
   // 타임라인
   const hl = document.createElement("div");
   hl.className = "dlabel";
-  hl.textContent = "변경 이력";
+  hl.textContent = t("history");
   body.appendChild(hl);
 
   // 고정 높이 스크롤 컨테이너 > relative 트랙 (spine 이 스크롤 내용과 함께 늘어나도록)
@@ -484,8 +563,8 @@ function renderHistory(): void {
     item.innerHTML =
       `<span class="rdot"></span>` +
       `<div class="rbody"><div class="rmsg" title="${esc(r.message || "")}">${esc(r.message || "(no message)")}</div>` +
-      `<div class="rmeta">${esc(revTime(r))} · ${esc(r.hash || "삭제됨")}</div></div>` +
-      `<button class="rrestore" title="이 버전으로 파일 복원">복원</button>`;
+      `<div class="rmeta">${esc(revTime(r))} · ${esc(r.hash || t("deletedHash"))}</div></div>` +
+      `<button class="rrestore" title="${esc(t("restoreTitle"))}">${esc(t("restore"))}</button>`;
     item.querySelector(".rbody")!.addEventListener("click", () => {
       fromRev = r.snapshot; renderHistory(); renderDiffFor();
     });
@@ -511,20 +590,20 @@ function renderHistory(): void {
   const cur = document.createElement("div");
   cur.className = "curwrap";
   cur.innerHTML =
-    `<div class="curhead"><span class="chev3">▸</span><span>현재 파일 내용</span>` +
-    `<span class="rhint">읽기 전용</span></div>` +
-    `<div class="curbody"><pre>불러오는 중…</pre></div>`;
+    `<div class="curhead"><span class="chev3">▸</span><span>${esc(t("curFileTitle"))}</span>` +
+    `<span class="rhint">${esc(t("readOnly"))}</span></div>` +
+    `<div class="curbody"><pre>${esc(t("loading"))}</pre></div>`;
   let curLoaded = false;
   cur.querySelector(".curhead")!.addEventListener("click", async () => {
     const open = cur.classList.toggle("open");
     if (!open || curLoaded) return;
     const pre = cur.querySelector("pre")!;
     try {
-      const t = await callTool("get_file_content", { path: selectedPath });
-      pre.textContent = t || "(빈 파일)";
+      const content = await callTool("get_file_content", { path: selectedPath });
+      pre.textContent = content || t("emptyFile");
       curLoaded = true;
     } catch (e) {
-      pre.textContent = "조회 실패: " + String(e);
+      pre.textContent = t("fetchFail") + ": " + String(e);
     }
   });
   body.appendChild(cur);
@@ -539,7 +618,7 @@ async function renderDiffFor(): Promise<void> {
     renderDiff(await callTool("get_diff", args));
   } catch (e) {
     const area = document.getElementById("diff-area");
-    if (area) area.innerHTML = `<div class="empty err">diff 조회 실패: ${esc(String(e))}</div>`;
+    if (area) area.innerHTML = `<div class="empty err">${esc(t("diffFetchFail"))}: ${esc(String(e))}</div>`;
   }
 }
 
@@ -547,11 +626,11 @@ function renderDiff(diff: string): void {
   const area = document.getElementById("diff-area");
   if (!area) return;
   if (!diff.trim() || diff.trim() === "텍스트 변경 없음") {
-    area.innerHTML = `<div class="diffempty">선택한 두 버전 사이에 텍스트 변경이 없습니다.</div>`;
+    area.innerHTML = `<div class="diffempty">${esc(t("noDiff"))}</div>`;
     return;
   }
   const fromLabel = revLabel(fromRev);
-  const toLabel = toRev === "work" ? "작업본" : revLabel(toRev);
+  const toLabel = toRev === "work" ? t("workingShort") : revLabel(toRev);
   const lines = diff.split("\n").map((line) => {
     let cls = "";
     if (line.startsWith("+") && !line.startsWith("+++")) cls = "add";
@@ -569,18 +648,18 @@ function renderDiff(diff: string): void {
 function inlineRestore(btn: HTMLElement, r: any): void {
   const box = document.createElement("span");
   box.className = "rconfirm";
-  box.innerHTML = `<button class="ok" title="현재 상태는 자동 스냅샷+백업">복원확정</button><button class="no">취소</button>`;
+  box.innerHTML = `<button class="ok" title="${esc(t("restoreNote"))}">${esc(t("restoreConfirm"))}</button><button class="no">${esc(t("cancel"))}</button>`;
   btn.replaceWith(box);
   box.querySelector(".no")!.addEventListener("click", (e) => { e.stopPropagation(); renderHistory(); });
   box.querySelector(".ok")!.addEventListener("click", async (e) => {
     e.stopPropagation();
-    box.innerHTML = `<span class="rmeta">복원 중…</span>`;
+    box.innerHTML = `<span class="rmeta">${esc(t("restoring"))}</span>`;
     try {
       const res = jparse(await callTool("config_restore", { path: selectedPath, from: r.snapshot }));
-      if (res && res.ok) { flashToast("복원됨 · 현재 상태 자동 백업"); await refresh(); await selectFile(selectedPath); }
-      else box.innerHTML = `<span class="rmeta err">실패: ${esc(res?.message || "알 수 없음")}</span>`;
+      if (res && res.ok) { flashToast(t("toastRestored")); await refresh(); await selectFile(selectedPath); }
+      else box.innerHTML = `<span class="rmeta err">${esc(t("failed"))}: ${esc(res?.message || t("unknown"))}</span>`;
     } catch (err) {
-      box.innerHTML = `<span class="rmeta err">실패: ${esc(String(err))}</span>`;
+      box.innerHTML = `<span class="rmeta err">${esc(t("failed"))}: ${esc(String(err))}</span>`;
     }
   });
 }
@@ -592,33 +671,34 @@ function applyDetailState(): void {
 
 // ----- load / refresh -----
 function showErr(hostId: string, label: string, e: unknown): void {
-  console.error(`[config-monitor] ${label} 실패`, e);
-  $(hostId).innerHTML = `<div class="empty err">${esc(label)} 조회 실패: ${esc(String(e))}</div>`;
+  console.error(`[config-monitor] ${label}`, e);
+  $(hostId).innerHTML = `<div class="empty err">${esc(label)} ${esc(t("fetchFail"))}: ${esc(String(e))}</div>`;
 }
 
 async function refresh(): Promise<void> {
-  $("config").innerHTML = `<div class="empty">불러오는 중…</div>`;
-  $("tracked").innerHTML = `<div class="empty">불러오는 중…</div>`;
+  $("config").innerHTML = `<div class="empty">${esc(t("loading"))}</div>`;
+  $("tracked").innerHTML = `<div class="empty">${esc(t("loading"))}</div>`;
   let trackedCount = 0;
   try {
     const trk = jparseLast(await callTool("get_tracked"));
     if (trk) trackedCount = renderTracked(trk);
-    else $("tracked").innerHTML = `<div class="empty">상태를 불러오지 못했습니다 (빈 응답)</div>`;
+    else $("tracked").innerHTML = `<div class="empty">${esc(t("emptyTrackedResp"))}</div>`;
   } catch (e) {
-    showErr("tracked", "추적 상태", e);
+    showErr("tracked", t("trackedStatus"), e);
   }
   try {
     const cfg = jparse(await callTool("get_config"));
     if (cfg) {
       renderConfig(cfg.sections || []);
-      $("config-hint").textContent = `${(cfg.sections || []).length} 카테고리 · 출처 경로 포함`;
-    } else $("config").innerHTML = `<div class="empty">설정을 불러오지 못했습니다 (빈 응답)</div>`;
+      // settingsHint 앞자리 숫자만 실제 카테고리 수로 치환해 라이브 카운트 유지.
+      $("config-hint").textContent = t("settingsHint").replace(/^\d+/, String((cfg.sections || []).length));
+    } else $("config").innerHTML = `<div class="empty">${esc(t("emptyConfigResp"))}</div>`;
   } catch (e) {
-    showErr("config", "설정", e);
+    showErr("config", t("settings"), e);
   }
   try { await refreshLibrary(); } catch (e) { console.error("[config-monitor] library", e); }
   const now = new Date().toTimeString().slice(0, 8);
-  $("subtitle").textContent = `추적 ${trackedCount}개 · 갱신 ${now}`;
+  $("subtitle").textContent = `${t("generatedPrefix")}${trackedCount}${t("generatedMid")}${now}`;
   refreshWatcher();
 }
 
@@ -635,10 +715,10 @@ async function refreshWatcher(): Promise<boolean> {
     running = !!(st && st.running);
     dot.className = "wdot" + (running ? " on" : "");
     // 파싱/상태 오류는 '정지'로 뭉개지 않고 명시한다 (침묵 실패가 디버깅을 막았던 회귀 가드).
-    label.textContent = running ? "watcher 실행 중" : (st?.error ? "watcher 상태 오류" : "watcher 정지");
+    label.textContent = running ? t("watcherOn") : (st?.error ? t("watcherErr") : t("watcherOff"));
     btn.title = running
-      ? `pid ${st.pid} · ${(st.dirs || []).length} dirs · ${Math.round(st.age_sec || 0)}s 전`
-      : (st?.error || st?.reason || "정지됨");
+      ? `pid ${st.pid} · ${(st.dirs || []).length} dirs · ${Math.round(st.age_sec || 0)}s ${t("ago")}`
+      : (st?.error || st?.reason || t("stopped"));
   } catch (e) {
     dot.className = "wdot";
     label.textContent = "watcher ?";
@@ -650,16 +730,16 @@ async function refreshWatcher(): Promise<boolean> {
     try {
       if (running) {
         await callTool("watcher_stop");
-        flashToast("watcher 중지");
+        flashToast(t("toastWatcherStop"));
         await refreshWatcher();
       } else {
         // watcher.ps1 가 spawn 후 heartbeat 를 쓰기까지 1~2s 걸린다.
-        // 시작 직후 status 는 아직 '정지'이므로 잠시 기다렸다가 재폴링한다.
+        // 시작 직후 status 는 아직 정지이므로 잠시 기다렸다가 재폴링한다.
         await callTool("watcher_start");
-        flashToast("watcher 시작 중…");
+        flashToast(t("toastWatcherStart"));
         for (let i = 0; i < 5; i++) {
           await delay(900);
-          if (await refreshWatcher()) { flashToast("watcher 실행 중"); break; }
+          if (await refreshWatcher()) { flashToast(t("watcherOn")); break; }
         }
       }
     } catch (e) { console.error("[config-monitor] watcher toggle", e); await refreshWatcher(); }
@@ -672,7 +752,7 @@ async function refreshWatcher(): Promise<boolean> {
 function applyDisplayMode(mode: string): void {
   const full = mode === "fullscreen";
   $("app").classList.toggle("fullscreen", full);
-  const label = full ? "창 모드" : "전체화면";
+  const label = full ? t("windowed") : t("fullscreen");
   $("fullscreen-label").textContent = label;
   ($("fullscreen") as HTMLButtonElement).title = label;   // 아이콘 버튼 툴팁
 }
@@ -684,7 +764,7 @@ async function toggleFullscreen(): Promise<void> {
     applyDisplayMode(res?.mode || next);
   } catch (e) {
     console.error("[config-monitor] requestDisplayMode", e);
-    flashToast("디스플레이 모드 변경 불가(호스트 미지원)");
+    flashToast(t("displayModeFail"));
   }
 }
 // 호스트가 지원하는 모드에 fullscreen 이 없으면 버튼 숨김.
@@ -725,10 +805,44 @@ function wireSettings(): void {
   const lines = $("opt-lines") as HTMLInputElement;
   lines.addEventListener("input", () => {
     document.documentElement.style.setProperty("--desc-lines", lines.value);
-    $("opt-lines-val").textContent = lines.value;
+    $("opt-lines-val").textContent = lines.value + t("linesSuffix");
   });
 }
 wireSettings();
+
+// ----- language toggle (ko/en) -----
+// 정적 [data-i18n]/[data-i18n-title] 라벨 + 버튼/툴팁/슬라이더 접미사를 현재 lang 으로 적용.
+// 동적 렌더(파일/설정/이력/토스트)는 각 렌더 함수가 t() 로 그리므로 여기서 다루지 않는다.
+function applyLang(): void {
+  document.documentElement.lang = lang;
+  $("lang-code").textContent = lang.toUpperCase();
+  ($("lang-toggle") as HTMLButtonElement).title = t("langTitle");
+  document.querySelectorAll<HTMLElement>("[data-i18n]").forEach((el) => { el.textContent = t(el.dataset.i18n!); });
+  document.querySelectorAll<HTMLElement>("[data-i18n-title]").forEach((el) => { el.title = t(el.dataset.i18nTitle!); });
+  // refresh() 밖에서 세팅되는 두 라벨은 여기서 직접 갱신:
+  //   전체화면 툴팁(모드 의존), 설명 줄 수 접미사(값+접미사).
+  const full = $("app").classList.contains("fullscreen");
+  const fsLabel = full ? t("windowed") : t("fullscreen");
+  $("fullscreen-label").textContent = fsLabel;
+  ($("fullscreen") as HTMLButtonElement).title = fsLabel;
+  const linesEl = document.getElementById("opt-lines") as HTMLInputElement | null;
+  if (linesEl) $("opt-lines-val").textContent = linesEl.value + t("linesSuffix");
+  // sel-name/sel-path 는 파일 선택 시 파일명/경로(데이터)로 덮이므로, 미선택 상태의 안내문일 때만 번역.
+  if (!selectedPath) {
+    $("sel-name").textContent = t("selectFilePrompt");
+    $("sel-path").textContent = t("selectFileHint");
+  }
+}
+
+$("lang-toggle").addEventListener("click", () => {
+  lang = lang === "ko" ? "en" : "ko";
+  try { localStorage.setItem("cm.lang", lang); } catch { /* localStorage 차단 시 무시 */ }
+  applyLang();
+  // 동적 영역 재렌더 1회: 목록/설정/부제/watcher + (선택 시) 이력 패널.
+  refresh();
+  if (selectedPath && currentRevs.length) { renderHistory(); renderDiffFor(); }
+});
+applyLang(); // 초기 1회: 정적 라벨을 저장된 lang(기본 ko)으로 맞춘다.
 
 // ----- wiring -----
 $("collapse-all").addEventListener("click", () => {
@@ -736,17 +850,17 @@ $("collapse-all").addEventListener("click", () => {
   secTitles.forEach((t) => collapsed.add(t));
   document.querySelectorAll("#config .sec[data-col]").forEach((el) => el.classList.add("collapsed"));
 });
-$("refresh").addEventListener("click", () => { refresh(); flashToast("새로고침"); });
+$("refresh").addEventListener("click", () => { refresh(); flashToast(t("toastRefreshed")); });
 $("snap").addEventListener("click", async () => {
-  await callTool("snapshot_now", { message: "from dashboard" });
-  flashToast("스냅샷 생성됨");
+  await callTool("snapshot_now", { message: t("snapshotMsg") });
+  flashToast(t("toastSnapshot"));
   await refresh();
   if (selectedPath) selectFile(selectedPath);
 });
 $("report").addEventListener("click", async () => {
-  flashToast("리포트 생성 중…");
-  try { await callTool("open_report"); flashToast("브라우저에서 리포트 열림"); }
-  catch (e) { flashToast("리포트 실패"); console.error("[config-monitor] report", e); }
+  flashToast(t("toastReport"));
+  try { await callTool("open_report"); flashToast(t("toastReportOpened")); }
+  catch (e) { flashToast(t("toastReportFail")); console.error("[config-monitor] report", e); }
 });
 $("panel-close").addEventListener("click", () => { detailOpen = false; applyDetailState(); });
 $("panel-reopen").addEventListener("click", () => { detailOpen = true; applyDetailState(); });
@@ -760,9 +874,9 @@ if (STANDALONE) {
 } else {
   $("fullscreen").addEventListener("click", toggleFullscreen);
   $("open-browser").addEventListener("click", async () => {
-    flashToast("브라우저에서 여는 중…");
-    try { await callTool("open_in_browser"); flashToast("브라우저 탭 열림"); }
-    catch (e) { flashToast("열기 실패"); console.error("[config-monitor] open_in_browser", e); }
+    flashToast(t("toastBrowser"));
+    try { await callTool("open_in_browser"); flashToast(t("toastTabOpened")); }
+    catch (e) { flashToast(t("toastOpenFail")); console.error("[config-monitor] open_in_browser", e); }
   });
   // 호스트 컨텍스트 변경(디스플레이 모드 등) 반영. connect 전에 등록.
   app.onhostcontextchanged = () => syncDisplayModeButton();
