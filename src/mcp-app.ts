@@ -59,6 +59,8 @@ const I18N: Record<string, Record<string, string>> = {
     selectFilePrompt: "파일 선택", selectFileHint: "왼쪽에서 추적 파일을 클릭하세요",
     libPaths: "라이브러리 경로", libPathRemoved: "경로 제거됨", libEnvTag: "env",
     libEnvHint: "환경변수(CLAUDE_CONFIG_LIBRARIES)로 지정되어 대시보드에서 제거 불가",
+    libInstallSelected: "선택 설치", libInstallGroup: "그룹 설치", libInstallGroupConfirm: "그룹 설치 확정",
+    libInstallGroupHint: "이 그룹의 미설치 스킬 전체 설치", libAllInstalled: "이미 전부 설치됨",
   },
   en: {
     newFile: "New", modified: "Modified", deleted: "Deleted", unchanged: "Same",
@@ -97,6 +99,8 @@ const I18N: Record<string, Record<string, string>> = {
     selectFilePrompt: "Select a file", selectFileHint: "Click a tracked file on the left",
     libPaths: "Library paths", libPathRemoved: "Path removed", libEnvTag: "env",
     libEnvHint: "Set via CLAUDE_CONFIG_LIBRARIES env; can't be removed from the dashboard",
+    libInstallSelected: "Install selected", libInstallGroup: "Install group", libInstallGroupConfirm: "Confirm install",
+    libInstallGroupHint: "Install all not-installed skills in this group", libAllInstalled: "All already installed",
   },
 };
 
@@ -142,6 +146,8 @@ let detailOpen = true;
 const collapsed = new Set<string>();         // 접힌 섹션 title
 const secTitles = new Set<string>();         // 접기 가능한 섹션 title (전부 접기 대상)
 let collapsedInit = false;                    // 기본 접힘 1회만 적용
+const libGroupOpen = new Set<string>();      // 펼친 라이브러리 스킬 그룹 경로(기본 접힘)
+const libChecked = new Set<string>();        // 선택 설치용 체크된 스킬 key
 
 let toastT: number | undefined;
 function flashToast(msg: string): void {
@@ -420,6 +426,152 @@ function buildLibAdder(): HTMLElement {
   return adder;
 }
 
+// 항목(스킬/에이전트/커맨드) 액션 버튼: 상태별 설치/동기화/제거. 설치는 relpath(가변 깊이) + lib 로 지정.
+function mkItemActions(it: any): HTMLElement {
+  const act = document.createElement("div");
+  act.className = "edit";
+  const mk = (txt: string, run: () => Promise<string>, confirmTxt?: string) => {
+    const b = document.createElement("button");
+    b.className = "addbtn";
+    b.textContent = txt;
+    b.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (confirmTxt && b.textContent !== confirmTxt) { b.textContent = confirmTxt; return; } // 2-click 확인
+      b.textContent = "…";
+      try {
+        const r = jparse(await run());
+        if (r && r.ok === false) { flashToast(r.message || t("failed")); b.textContent = t("failed"); return; }
+        flashToast(`${txt} ${t("done")} · ${it.name}`);
+        await refresh();
+      } catch (err) { b.textContent = t("failed"); console.error("[config-monitor] library", err); }
+    });
+    return b;
+  };
+  const doInstall = () => callTool("library_install", { category: it.category, path: it.relpath, lib: it.lib });
+  const doRemove = () => callTool("library_uninstall", { category: it.category, name: it.name });
+  if (it.status === "not_installed") act.appendChild(mk(t("libInstall"), doInstall));
+  if (it.status === "modified") act.appendChild(mk(t("libSync"), doInstall, t("libSyncConfirm")));
+  if (it.status !== "not_installed") act.appendChild(mk(t("remove"), doRemove, t("libUninstallConfirm")));
+  return act;
+}
+
+const libKey = (it: any): string => `${it.lib}|${it.category}|${it.relpath}`;
+
+// 여러 스킬 순차 설치 후 1회 새로고침(설치마다 새로고침하면 116개에서 폭주).
+async function installMany(items: any[]): Promise<void> {
+  let ok = 0, fail = 0;
+  for (const it of items) {
+    try {
+      const r = jparse(await callTool("library_install", { category: it.category, path: it.relpath, lib: it.lib }));
+      if (r && r.ok === false) fail++; else ok++;
+    } catch { fail++; }
+  }
+  libChecked.clear();
+  flashToast(`${t("libInstall")} ${ok} ${t("done")}${fail ? ` · ${fail} ${t("failed")}` : ""}`);
+  await refresh();
+}
+
+// 스킬을 그룹 경로(가변 깊이)로 트리화해 접이식으로 렌더. 각 스킬: 체크박스 + 상태 + 설치/제거.
+function renderSkillTree(skills: any[]): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.style.gridColumn = "1 / -1";
+
+  const bar = document.createElement("div");
+  bar.className = "libselbar";
+  const selBtn = document.createElement("button");
+  selBtn.className = "addbtn";
+  const updateBar = () => {
+    const n = skills.filter((s) => libChecked.has(libKey(s))).length;
+    selBtn.textContent = `${t("libInstallSelected")} (${n})`;
+    (selBtn as HTMLButtonElement).disabled = n === 0;
+    selBtn.style.opacity = n ? "1" : ".5";
+  };
+  selBtn.addEventListener("click", async () => {
+    const chosen = skills.filter((s) => libChecked.has(libKey(s)));
+    if (chosen.length) await installMany(chosen);
+  });
+  bar.appendChild(selBtn);
+  wrap.appendChild(bar);
+
+  interface Node { dirs: Map<string, Node>; skills: any[]; }
+  const root: Node = { dirs: new Map(), skills: [] };
+  for (const it of skills) {
+    let node = root;
+    for (const seg of it.group ? String(it.group).split("/") : []) {
+      if (!node.dirs.has(seg)) node.dirs.set(seg, { dirs: new Map(), skills: [] });
+      node = node.dirs.get(seg)!;
+    }
+    node.skills.push(it);
+  }
+  const collect = (node: Node): any[] => {
+    let out = node.skills.slice();
+    for (const c of node.dirs.values()) out = out.concat(collect(c));
+    return out;
+  };
+  const mkSkillRow = (it: any): HTMLElement => {
+    const [label, cls] = libStatus(it.status);
+    const row = document.createElement("div");
+    row.className = "libskill";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.className = "libcb";
+    cb.checked = libChecked.has(libKey(it));
+    cb.addEventListener("change", () => {
+      if (cb.checked) libChecked.add(libKey(it)); else libChecked.delete(libKey(it));
+      updateBar();
+    });
+    const nm = document.createElement("span");
+    nm.className = "sknm";
+    nm.textContent = it.name;
+    const bd = document.createElement("span");
+    bd.className = "badge" + (cls === "ok" ? " ok" : "");
+    bd.textContent = label + (it.kit_ref ? " · " + t("kitRef") : "");
+    row.append(cb, nm, bd, mkItemActions(it));
+    return row;
+  };
+  const renderNode = (node: Node, path: string): HTMLElement => {
+    const frag = document.createElement("div");
+    for (const [seg, child] of node.dirs) {
+      const gpath = path ? `${path}/${seg}` : seg;
+      const all = collect(child);
+      const installed = all.filter((s) => s.status === "installed").length;
+      const grp = document.createElement("div");
+      grp.className = "libgrp" + (libGroupOpen.has(gpath) ? " open" : "");
+      const gh = document.createElement("div");
+      gh.className = "libgrphead";
+      gh.innerHTML =
+        `<span class="chev4">▸</span><span class="gname">${esc(seg)}</span>` +
+        `<span class="gcount">${all.length}${installed ? ` · ${installed} ${esc(t("libInstalled"))}` : ""}</span>`;
+      const gall = document.createElement("button");
+      gall.className = "linkbtn gallbtn";
+      gall.textContent = t("libInstallGroup");
+      gall.title = t("libInstallGroupHint");
+      gall.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const pending = all.filter((s) => s.status !== "installed");
+        if (!pending.length) { flashToast(t("libAllInstalled")); return; }
+        if (gall.textContent !== t("libInstallGroupConfirm")) { gall.textContent = t("libInstallGroupConfirm"); return; }
+        await installMany(pending);
+      });
+      gh.appendChild(gall);
+      gh.addEventListener("click", () => {
+        if (libGroupOpen.has(gpath)) libGroupOpen.delete(gpath); else libGroupOpen.add(gpath);
+        grp.classList.toggle("open");
+      });
+      const gbody = document.createElement("div");
+      gbody.className = "libgrpbody";
+      gbody.appendChild(renderNode(child, gpath));
+      grp.append(gh, gbody);
+      frag.appendChild(grp);
+    }
+    for (const it of node.skills) frag.appendChild(mkSkillRow(it));
+    return frag;
+  };
+  wrap.appendChild(renderNode(root, ""));
+  updateBar();
+  return wrap;
+}
+
 function renderLibrary(host: HTMLElement, res: any): void {
   const secEl = document.createElement("div");
   secEl.className = "sec" + (collapsed.has("Library") ? " collapsed" : "");
@@ -448,37 +600,19 @@ function renderLibrary(host: HTMLElement, res: any): void {
   const body = document.createElement("div");
   body.className = "secbody";
   if (!items.length) body.innerHTML = `<div class="empty">${esc(t("libEmpty"))}</div>`;
-  for (const it of items) {
+  // agents/commands 는 평면 카드, skills 는 가변 깊이 트리(체크박스 선택 설치).
+  for (const it of items.filter((x) => x.category !== "skills")) {
     const [label, cls] = libStatus(it.status);
     const row = document.createElement("div");
     row.className = "card";
     row.innerHTML =
       `<div class="cname"><span class="nm">${esc(it.category)} / ${esc(it.name)}</span>` +
       `<span class="badge ${cls === "ok" ? "ok" : ""}">${esc(label)}${it.kit_ref ? " · " + esc(t("kitRef")) : ""}</span></div>`;
-    const act = document.createElement("div");
-    act.className = "edit";
-    const mkBtn = (txt: string, tool: string, confirmTxt?: string) => {
-      const b = document.createElement("button");
-      b.className = "addbtn";
-      b.textContent = txt;
-      b.addEventListener("click", async () => {
-        if (confirmTxt && b.textContent !== confirmTxt) { b.textContent = confirmTxt; return; } // 2-click 확인
-        b.textContent = "…";
-        try {
-          const r = jparse(await callTool(tool, { category: it.category, name: it.name }));
-          if (r && r.ok === false) { flashToast(r.message || t("failed")); b.textContent = t("failed"); return; }
-          flashToast(`${txt} ${t("done")} · ${it.name}`);
-          await refresh();
-        } catch (e) { b.textContent = t("failed"); console.error("[config-monitor] library", e); }
-      });
-      return b;
-    };
-    if (it.status === "not_installed") act.appendChild(mkBtn(t("libInstall"), "library_install"));
-    if (it.status === "modified") act.appendChild(mkBtn(t("libSync"), "library_install", t("libSyncConfirm")));
-    if (it.status !== "not_installed") act.appendChild(mkBtn(t("remove"), "library_uninstall", t("libUninstallConfirm")));
-    row.appendChild(act);
+    row.appendChild(mkItemActions(it));
     body.appendChild(row);
   }
+  const skillItems = items.filter((x) => x.category === "skills");
+  if (skillItems.length) body.appendChild(renderSkillTree(skillItems));
   // 다중 라이브러리 경로 관리(전체 폭): 등록된 경로 목록(제거 가능) + 신규 경로 등록 입력행.
   // env(CLAUDE_CONFIG_LIBRARIES) 지정 경로는 대시보드에서 제거 불가 -> env 태그만 표시.
   const mkPathChip = (l: any): HTMLElement => {
@@ -844,27 +978,17 @@ async function toggleBrowserFullscreen(): Promise<void> {
   } catch (e) { console.error("[config-monitor] requestFullscreen", e); flashToast(t("displayModeFail")); }
 }
 // MCP 위젯 전체화면: 호스트에 requestDisplayMode 요청 -> 호스트가 iframe 을 키우면 .app.fullscreen(100vh)로 채움.
-// [진단용] 호스트가 실제로 뭘 광고/반환하는지 오래 유지되는 토스트로 노출(원인 규명 후 제거 예정).
+// (surface 별 지원 차이: 예) cowork=fullscreen 가능, code=inline 만 -> 후자는 조용히 inline 반환하여 무반응)
 async function toggleFullscreen(): Promise<void> {
-  const ctx = (app.getHostContext() as any) || {};
-  const avail = ctx.availableDisplayModes;
-  const cur = ctx.displayMode || "inline";
+  const cur = (app.getHostContext() as any)?.displayMode || "inline";
   const next = cur === "fullscreen" ? "inline" : "fullscreen";
-  let line = `[DM] avail=${JSON.stringify(avail ?? null)} cur=${cur} req=${next}`;
   try {
     const res: any = await app.requestDisplayMode({ mode: next as any });
-    line += ` -> res.mode=${JSON.stringify(res?.mode ?? res)}`;
     applyDisplayMode(res?.mode || next);
   } catch (e) {
-    line += ` -> ERROR: ${String(e)}`;
     console.error("[config-monitor] requestDisplayMode", e);
+    flashToast(t("displayModeFail"));
   }
-  console.log("[config-monitor]", line, ctx);
-  const el = $("toast");
-  el.textContent = line;
-  el.style.display = "block";
-  if (toastT) clearTimeout(toastT);
-  toastT = window.setTimeout(() => { el.style.display = "none"; }, 12000);
 }
 // 전체화면 버튼은 항상 노출한다. 호스트가 fullscreen 모드를 지원하지 않으면 클릭 시 toast 로 안내.
 function syncDisplayModeButton(): void {
@@ -973,11 +1097,5 @@ if (STANDALONE) {
   app.onhostcontextchanged = () => syncDisplayModeButton();
   app.connect()
     .then(() => { syncDisplayModeButton(); return refresh(); })
-    .then(() => {
-      // [진단용] 접속 직후 호스트가 광고하는 display mode 목록/현재 모드를 부제에 노출.
-      const ctx = app.getHostContext() as any;
-      $("subtitle").textContent += `  ·  DM avail=${JSON.stringify(ctx?.availableDisplayModes ?? null)} cur=${ctx?.displayMode || "inline"}`;
-      console.log("[config-monitor] hostContext", ctx);
-    })
     .catch((e: unknown) => console.error("[config-monitor] connect failed", e));
 }

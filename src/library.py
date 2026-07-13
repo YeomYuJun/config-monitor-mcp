@@ -94,19 +94,32 @@ def _env_libs():
     return [p.strip() for p in os.environ.get("CLAUDE_CONFIG_LIBRARIES", "").split(os.pathsep) if p.strip()]
 
 
+def _norm(p):
+    """경로 비교용 정규화(대소문자/구분자/./.. 흡수). 같은 물리 경로의 다른 표기를 한 키로.
+    이게 없으면 'D:\\x' 와 'D:/x' 가 다른 경로로 취급돼 같은 라이브러리가 두 번 스캔됨."""
+    return os.path.normcase(os.path.normpath(p))
+
+
 def _load_libs(store):
-    """라이브러리 목록 = env(선언적) + store 등록분(런타임 등록), 순서 유지 중복 제거.
+    """라이브러리 목록 = env(선언적) + store 등록분(런타임 등록). 정규화 경로로 중복 제거(첫 표기 유지).
     CLAUDE_CONFIG_LIBRARIES 는 os.pathsep(;/:) 구분 복수 경로 - env 에서 빼면 목록에서도 빠진다."""
-    libs = []
-    for p in _env_libs():
-        if p not in libs:
+    libs, seen = [], set()
+
+    def add(p):
+        if not p:
+            return
+        k = _norm(p)
+        if k not in seen:
+            seen.add(k)
             libs.append(p)
+
+    for p in _env_libs():
+        add(p)
     cfg_path = _store_config_path(store)
     if os.path.exists(cfg_path):
         with open(cfg_path, encoding="utf-8") as f:
             for p in json.load(f).get("libraries", []):
-                if p not in libs:
-                    libs.append(p)
+                add(p)
     return libs
 
 
@@ -118,7 +131,7 @@ def _register_lib(store, lib):
     with open(p, encoding="utf-8") as f:
         cfg = json.load(f)
     libs = cfg.setdefault("libraries", [])
-    if lib not in libs:
+    if all(_norm(x) != _norm(lib) for x in libs):   # 정규화 기준 멱등(다른 표기의 중복 방지)
         libs.append(lib)
         tmp = p + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -135,9 +148,10 @@ def _unregister_lib(store, lib):
     with open(p, encoding="utf-8") as f:
         cfg = json.load(f)
     libs = cfg.get("libraries", [])
-    if lib not in libs:
+    keep = [x for x in libs if _norm(x) != _norm(lib)]   # 정규화 기준 제거(다른 표기도 함께)
+    if len(keep) == len(libs):
         return False
-    cfg["libraries"] = [x for x in libs if x != lib]
+    cfg["libraries"] = keep
     tmp = p + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
@@ -146,18 +160,29 @@ def _unregister_lib(store, lib):
 
 
 def _iter_items(lib, category):
+    """(leaf, full, kind, relpath) 산출.
+    file 종류(agents/commands): base 직계 *.md.
+    dir 종류(skills): 가변 깊이 재귀 - SKILL.md 를 가진 디렉토리를 스킬 leaf 로 간주.
+      (그룹/서브그룹으로 감싸인 구조도 leaf 만 뽑음. leaf 내부 하위폴더로는 안 내려감.)
+    relpath 는 base(카테고리 루트) 기준 상대경로 - 그룹 표시·설치 지정에 사용."""
     sub, kind = CATEGORIES[category]
     base = os.path.join(lib, sub)
     if not os.path.isdir(base):
         return
-    for name in sorted(os.listdir(base)):
-        if name.startswith("."):
-            continue
-        full = os.path.join(base, name)
-        if kind == "file" and name.endswith(".md") and os.path.isfile(full):
-            yield name[:-3], full, kind
-        elif kind == "dir" and os.path.isdir(full):
-            yield name, full, kind
+    if kind == "file":
+        for name in sorted(os.listdir(base)):
+            if name.startswith("."):
+                continue
+            full = os.path.join(base, name)
+            if name.endswith(".md") and os.path.isfile(full):
+                yield name[:-3], full, kind, name[:-3]
+        return
+    for root, dirs, names in os.walk(base):
+        dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+        if "SKILL.md" in names:
+            rel = os.path.relpath(root, base).replace("\\", "/")
+            yield os.path.basename(root), root, kind, rel
+            dirs[:] = []  # leaf 확정 - 스킬 내부는 하위 스킬이 아니므로 더 안 내려감
 
 
 def _target_path(target_root, category, name, kind):
@@ -197,10 +222,14 @@ def cmd_scan(a):
         cats = {}
         for category in CATEGORIES:
             items = []
-            for name, full, kind in _iter_items(lib, category):
-                tgt = _target_path(a.target, category, name, kind)
+            for leaf, full, kind, rel in _iter_items(lib, category):
+                # 설치는 leaf 이름으로 평탄화(그룹 접두 제거) -> ~/.claude/<sub>/<leaf>
+                tgt = _target_path(a.target, category, leaf, kind)
+                group = os.path.dirname(rel).replace("\\", "/")  # "" = 그룹 없음(평면)
                 items.append({
-                    "name": name,
+                    "name": leaf,
+                    "group": group,      # 표시용(가변 깊이 트리): "2-stack/java-spring" 등
+                    "relpath": rel,      # 설치 지정용(소스 상대경로, leaf 와 다를 수 있음)
                     "status": _status(full, tgt, kind),
                     "kit_ref": _has_kit_ref(full, kind),
                     "lib_path": full,
@@ -215,23 +244,35 @@ def cmd_unregister(a):
     # scan 처럼 항상 exit 0 + JSON 으로 응답(runPy 가 nonzero exit 를 throw 하므로 out() 대신 print).
     if not a.lib:
         print(json.dumps({"ok": False, "message": "제거할 라이브러리 경로(--lib) 필요"}, ensure_ascii=False)); return
-    if a.lib in _env_libs():
+    if any(_norm(a.lib) == _norm(e) for e in _env_libs()):
         print(json.dumps({"ok": False, "message": "환경변수(CLAUDE_CONFIG_LIBRARIES)로 지정된 경로는 제거할 수 없습니다"}, ensure_ascii=False)); return
     removed = _unregister_lib(a.store, a.lib)
     print(json.dumps({"ok": True, "message": "라이브러리 경로 제거됨" if removed else "이미 없음 (no-op)", "removed": removed}, ensure_ascii=False))
 
 
 def _resolve_item(a):
-    """(lib_path, kind, target) 해석. 이름은 단일 세그먼트만 허용(경로 주입 방지)."""
-    if a.name != os.path.basename(a.name) or a.name in (".", "..") or any(c in a.name for c in "\\/"):
-        out(False, f"이름이 유효하지 않음: '{a.name}'")
-    libs = [a.lib] if a.lib else _load_libs(a.store)
+    """(src, kind, target) 해석. a.path = 카테고리 루트 기준 상대경로(가변 깊이 허용).
+    타깃은 leaf 이름으로 평탄화.
+    경로 주입 차단: 각 세그먼트는 순수 파일명이어야 함 - 빈/./.. 금지, 콜론 금지
+    (드라이브상대 'C:foo' 는 isabs=False 로 새어들어 os.path.join 이 lib 밖으로 튐 + NTFS ADS 'a:b'),
+    그리고 basename 과 동일(구분자·드라이브 접두 제거되면 다름)."""
+    rel = (a.path or "").replace("\\", "/").strip("/")
+    parts = rel.split("/") if rel else []
+    seg_bad = any(p in ("", ".", "..") or ":" in p or p != os.path.basename(p) for p in parts)
+    if not parts or os.path.isabs(a.path) or seg_bad:
+        out(False, f"경로가 유효하지 않음: '{a.path}'")
     sub, kind = CATEGORIES[a.category]
+    if kind == "file" and len(parts) != 1:
+        out(False, f"경로는 단일 이름이어야 함: '{a.path}'")
+    leaf = parts[-1]
+    libs = [a.lib] if a.lib else _load_libs(a.store)
     for lib in libs:
-        src = os.path.join(lib, sub, a.name if kind == "dir" else f"{a.name}.md")
+        src = os.path.join(lib, sub, *parts)
+        if kind == "file":
+            src += ".md"
         if os.path.exists(src):
-            return src, kind, _target_path(a.target, a.category, a.name, kind)
-    out(False, f"라이브러리에 없음: {a.category}/{a.name}")
+            return src, kind, _target_path(a.target, a.category, leaf, kind)
+    out(False, f"라이브러리에 없음: {a.category}/{rel}")
 
 
 def cmd_install(a):
@@ -248,12 +289,12 @@ def cmd_install(a):
         shutil.copy2(src, tgt)
     else:
         shutil.copytree(src, tgt)
-    out(True, f"{'동기화' if existed else '설치'}됨: {a.category}/{a.name}",
+    out(True, f"{'동기화' if existed else '설치'}됨: {a.category}/{a.path}",
         target=tgt, backup=bak, synced=existed)
 
 
 def cmd_uninstall(a):
-    if a.name != os.path.basename(a.name) or a.name in (".", "..") or any(c in a.name for c in "\\/"):
+    if a.name != os.path.basename(a.name) or a.name in (".", "..") or ":" in a.name or any(c in a.name for c in "\\/"):
         out(False, f"이름이 유효하지 않음: '{a.name}'")
     sub, kind = CATEGORIES[a.category]
     tgt = _target_path(a.target, a.category, a.name, kind)
@@ -277,7 +318,8 @@ def main():
     p = sub.add_parser("unregister"); p.add_argument("--lib", default=None)
     p.set_defaults(func=cmd_unregister)
     p = sub.add_parser("install"); p.add_argument("category", choices=list(CATEGORIES))
-    p.add_argument("name"); p.add_argument("--lib", default=None)
+    p.add_argument("path", help="카테고리 루트 기준 상대경로(예: 2-stack/java-spring/error-handling). agents/commands 는 이름")
+    p.add_argument("--lib", default=None)
     p.set_defaults(func=cmd_install)
     p = sub.add_parser("uninstall"); p.add_argument("category", choices=list(CATEGORIES))
     p.add_argument("name")

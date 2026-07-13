@@ -136,6 +136,25 @@
   .chip .ctxt{word-break:break-all}
   .chip .libenv{font-size:9px;letter-spacing:.04em;text-transform:uppercase;color:var(--mut3);
     background:#E6E8EC;border-radius:3px;padding:1px 5px;flex:0 0 auto}
+
+  /* library skill tree (가변 깊이 그룹 + 체크박스 선택 설치) */
+  .libselbar{display:flex;justify-content:flex-end;margin-bottom:8px}
+  .libgrp{border:1px solid var(--line2);border-radius:6px;background:var(--panel);margin-bottom:6px;overflow:hidden}
+  .libgrphead{display:flex;align-items:center;gap:8px;padding:7px 11px;cursor:pointer;background:#F3F4F6;user-select:none}
+  .libgrphead:hover{background:#ECEEF2}
+  .libgrphead .chev4{display:inline-block;transition:transform .15s;font-size:10px;color:var(--mut2);flex:0 0 auto}
+  .libgrp.open>.libgrphead .chev4{transform:rotate(90deg)}
+  .libgrphead .gname{font-weight:600;font-size:12.5px}
+  .libgrphead .gcount{font-family:var(--mono);font-size:10.5px;color:var(--mut)}
+  .libgrphead .gallbtn{margin-left:auto;font-size:11px;flex:0 0 auto}
+  .libgrpbody{display:none;padding:5px 8px 5px 14px}
+  .libgrp.open>.libgrpbody{display:block}
+  .libskill{display:flex;align-items:center;gap:9px;padding:5px 7px;border-radius:5px}
+  .libskill:hover{background:#F4F6FA}
+  .libskill .libcb{width:15px;height:15px;accent-color:var(--accent);cursor:pointer;flex:0 0 auto;margin:0}
+  .libskill .sknm{font-family:var(--mono);font-size:12px;color:var(--fg);flex:1;min-width:0;word-break:break-all}
+  .libskill .badge{flex:0 0 auto}
+  .libskill .edit{flex-direction:row;margin:0;gap:6px;flex:0 0 auto}
   .chip .cx{border:none;background:none;color:var(--mut3);cursor:pointer;font-size:12px;padding:0 1px;line-height:1}
   .chip .cx:hover{color:var(--del)}
   .chip .ok{border:none;background:var(--del);color:#fff;border-radius:4px;padding:1px 7px;font-size:10px;cursor:pointer}
