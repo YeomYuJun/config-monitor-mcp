@@ -39,14 +39,16 @@ for _s in (sys.stdout, sys.stderr):
     except (AttributeError, ValueError):
         pass
 
+import paths  # read(claude_config.py) 와 동일한 해석기로 Desktop config 경로를 잡는다
+
 HOME = os.path.expanduser("~")
 DEFAULT_SETTINGS = os.path.join(HOME, ".claude", "settings.json")
 DEFAULT_SKILLS = os.path.join(HOME, ".claude", "skills")
 DEFAULT_AGENTS = os.path.join(HOME, ".claude", "agents")
 DEFAULT_CLAUDE_JSON = os.path.join(HOME, ".claude.json")
-DEFAULT_DESKTOP_CONFIG = os.path.join(
-    os.environ.get("APPDATA", os.path.join(HOME, "AppData", "Roaming")),
-    "Claude", "claude_desktop_config.json")
+# Win32(%APPDATA%\Claude) vs MSIX/Store(...\Packages\Claude_*\LocalCache\Roaming\Claude)
+# 를 프로브해 실제 파일을 대상으로 삼는다. --desktop-config 로 명시 오버라이드 가능.
+DEFAULT_DESKTOP_CONFIG = paths.desktop_config_path()
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 def out(ok, message, **extra):

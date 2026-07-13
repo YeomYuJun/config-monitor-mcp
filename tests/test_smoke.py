@@ -442,6 +442,71 @@ class LibraryToggle(unittest.TestCase):
         self.assertEqual(res["libraries"], [])
 
 
+class DesktopPathResolve(unittest.TestCase):
+    r"""paths.py: Claude Desktop 데이터 디렉토리 해석 (설치 방식별 겸용).
+      Win32 설치본 :  %APPDATA%\Claude
+      MSIX/Store  :  %LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude
+    두 후보를 모두 프로브해 '실제 존재하며 config 가 최신인' 쪽을 고른다."""
+
+    def setUp(self):
+        if SRC not in sys.path:
+            sys.path.insert(0, SRC)
+        import paths                       # 없으면 여기서 실패(=RED, 기능 미구현)
+        self.paths = paths
+        self.tmp = tempfile.mkdtemp(prefix="paths_test_")
+        self.appdata = os.path.join(self.tmp, "Roaming")
+        self.localappdata = os.path.join(self.tmp, "Local")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _win32_dir(self):
+        return os.path.join(self.appdata, "Claude")
+
+    def _msix_dir(self):
+        return os.path.join(self.localappdata, "Packages",
+                            "Claude_pzs8sxrjxfjjc", "LocalCache", "Roaming", "Claude")
+
+    def _make_config(self, d, mtime=None):
+        os.makedirs(d, exist_ok=True)
+        cfg = os.path.join(d, "claude_desktop_config.json")
+        with open(cfg, "w", encoding="utf-8") as f:
+            json.dump({"mcpServers": {}}, f)
+        if mtime is not None:
+            os.utime(cfg, (mtime, mtime))
+        return cfg
+
+    def _resolve(self):
+        return self.paths.resolve_desktop_dir(appdata=self.appdata, localappdata=self.localappdata)
+
+    def test_win32_only(self):
+        self._make_config(self._win32_dir())
+        self.assertEqual(self._resolve(), self._win32_dir())
+
+    def test_msix_only(self):
+        # Win32 후보 디렉토리는 아예 없고 MSIX 패키지 폴더에만 config 존재.
+        self._make_config(self._msix_dir())
+        self.assertEqual(self._resolve(), self._msix_dir())
+
+    def test_both_prefers_most_recent_config(self):
+        self._make_config(self._win32_dir(), mtime=1000)
+        self._make_config(self._msix_dir(), mtime=2000)      # MSIX 가 더 최신 -> MSIX
+        self.assertEqual(self._resolve(), self._msix_dir())
+        os.utime(os.path.join(self._win32_dir(), "claude_desktop_config.json"), (3000, 3000))
+        self.assertEqual(self._resolve(), self._win32_dir())  # Win32 가 최신 -> Win32
+
+    def test_none_falls_back_to_win32(self):
+        # 아무 후보도 없으면 Win32 기본 경로로 결정적 폴백(존재하지 않아도).
+        self.assertEqual(self._resolve(), self._win32_dir())
+
+    def test_desktop_config_path_appends_filename(self):
+        self._make_config(self._msix_dir())
+        self.assertEqual(
+            self.paths.desktop_config_path(appdata=self.appdata, localappdata=self.localappdata),
+            os.path.join(self._msix_dir(), "claude_desktop_config.json"))
+
+
 class ClaudeConfigDump(unittest.TestCase):
     def test_dump_no_unicode_crash(self):
         # 핵심 회귀 가드: PYTHONUTF8/IOENCODING 없이도(=스크립트 내 reconfigure) 죽지 않아야.

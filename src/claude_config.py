@@ -27,8 +27,12 @@ for _s in (sys.stdout, sys.stderr):
         pass
 from datetime import datetime
 
+import paths  # Win32/MSIX 겸용 Claude Desktop 디렉토리 해석(read↔write 동일 경로 보장)
+
 HOME = os.path.expanduser("~")
-APPDATA = os.environ.get("APPDATA", os.path.join(HOME, "AppData", "Roaming"))
+# Desktop 데이터 디렉토리('...\Claude')는 설치 방식(Win32 vs MSIX/Store)에 따라
+# 물리 경로가 다르므로 후보를 프로브해 해석한다. config·skills-plugin manifest 둘 다 하위.
+DESKTOP_DIR = paths.resolve_desktop_dir()
 
 CANDIDATES = {
     "claude_json":     [os.path.join(HOME, ".claude.json")],
@@ -37,9 +41,9 @@ CANDIDATES = {
     "skills_dir":      [os.path.join(HOME, ".claude", "skills")],
     "agents_dir":      [os.path.join(HOME, ".claude", "agents")],
     "scheduled_dir":   [os.path.join(HOME, "Claude", "Scheduled")],
-    "desktop_config":  [os.path.join(APPDATA, "Claude", "claude_desktop_config.json")],
+    "desktop_config":  [os.path.join(DESKTOP_DIR, "claude_desktop_config.json")],
     "desktop_skill_manifest_glob":
-                       [os.path.join(APPDATA, "Claude", "local-agent-mode-sessions",
+                       [os.path.join(DESKTOP_DIR, "local-agent-mode-sessions",
                                      "skills-plugin", "**", "manifest.json")],
 }
 
