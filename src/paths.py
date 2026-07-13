@@ -54,7 +54,7 @@ def resolve_desktop_dir(appdata=None, localappdata=None, home=None):
       1) config 파일이 존재하는 후보 중 config mtime 이 가장 최신인 것
          (A/B 가 모두 있는 재설치·마이그레이션 상황에서 '지금 쓰이는' 파일 우선)
       2) 없으면 디렉토리라도 존재하는 후보 중 첫 번째
-      3) 아무것도 없으면 첫 후보(Win32 기본) — 결정적 폴백"""
+      3) 아무것도 없으면 첫 후보(Win32 기본). 결정적 폴백"""
     cands = desktop_dir_candidates(appdata, localappdata, home)
 
     with_cfg = [(c, _config_mtime(c)) for c in cands]

@@ -442,6 +442,101 @@ class LibraryToggle(unittest.TestCase):
         self.assertEqual(res["libraries"], [])
 
 
+class TrackProjectPreset(unittest.TestCase):
+    """cas.py track: 디렉토리 -> 프로젝트 프리셋(settings.json + settings.local.json) 확장,
+    파일/글롭은 그대로. status --json 의 defaults 로 전역/프로젝트 분류."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="track_test_")
+        self.store = os.path.join(self.tmp, "store")
+        run(CAS, "--store", self.store, "init")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def cas(self, *args):
+        return run(CAS, "--store", self.store, *args)
+
+    def _nc(self, p):
+        return os.path.normcase(os.path.abspath(p))
+
+    def _make(self, path, body="{}"):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(body)
+        return path
+
+    def test_track_project_dir_expands_preset(self):
+        # 프로젝트 루트를 주면 <root>/.claude 의 settings.json + settings.local.json 을 추적.
+        proj = os.path.join(self.tmp, "repoA")
+        s = self._make(os.path.join(proj, ".claude", "settings.json"))
+        sl = self._make(os.path.join(proj, ".claude", "settings.local.json"))
+        rc, out, err = self.cas("track", "--json", proj)
+        self.assertEqual(rc, 0, err)
+        added = {self._nc(x) for x in json.loads(out)["added"]}
+        self.assertEqual(added, {self._nc(s), self._nc(sl)})
+
+    def test_track_claude_dir_directly(self):
+        # .claude 디렉토리를 직접 주면 그 안의 프리셋을 추적(settings.local 없으면 settings 만).
+        cdir = os.path.join(self.tmp, "repoB", ".claude")
+        s = self._make(os.path.join(cdir, "settings.json"))
+        rc, out, err = self.cas("track", "--json", cdir)
+        self.assertEqual(rc, 0, err)
+        added = {self._nc(x) for x in json.loads(out)["added"]}
+        self.assertEqual(added, {self._nc(s)})
+
+    def test_track_file_path_backward_compat(self):
+        # 파일 경로를 직접 주면 그 파일만 추적(기존 동작 유지).
+        f = self._make(os.path.join(self.tmp, "repoC", ".claude", "settings.json"))
+        rc, out, err = self.cas("track", "--json", f)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual({self._nc(x) for x in json.loads(out)["added"]}, {self._nc(f)})
+
+    def test_track_dir_without_config_adds_nothing(self):
+        # 설정 파일 없는 폴더 -> 추가 0건(오류 아님).
+        empty = os.path.join(self.tmp, "repoD", ".claude")
+        os.makedirs(empty)
+        rc, out, err = self.cas("track", "--json", empty)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(json.loads(out)["added"], [])
+
+    def test_untrack_removes_project_file(self):
+        f = self._make(os.path.join(self.tmp, "repoE", ".claude", "settings.json"))
+        self.cas("track", "--json", f)
+        rc, out, err = self.cas("untrack", "--json", f)
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(json.loads(out)["ok"])
+        st = json.loads(self.cas("status", "--json")[1])
+        allpaths = [p for k in ("new", "modified", "deleted", "unchanged") for p in st.get(k, [])]
+        self.assertNotIn(self._nc(f), [self._nc(x) for x in allpaths])
+
+    def test_status_defaults_classifies_global_vs_project(self):
+        # fake HOME 의 ~/.claude.json 은 DEFAULT_TRACKED(전역)로 분류, 프로젝트 파일은 아님.
+        fake_home = os.path.join(self.tmp, "home")
+        gj = self._make(os.path.join(fake_home, ".claude.json"))
+        pf = self._make(os.path.join(self.tmp, "repoF", ".claude", "settings.json"))
+        e = dict(os.environ)
+        e.pop("CLAUDE_CAS_NO_DEFAULT_TRACK", None)  # 기본 병합 켬
+        e["HOME"] = fake_home
+        e["USERPROFILE"] = fake_home
+        def cas_env(*args):
+            return subprocess.run([sys.executable, CAS, "--store", self.store, *args],
+                                  capture_output=True, text=True, encoding="utf-8", env=e, timeout=60)
+        cas_env("track", "--json", pf)          # 프로젝트 파일 수동 추적
+        p = cas_env("status", "--json")         # 이때 fake ~/.claude.json 자동 병합
+        self.assertEqual(p.returncode, 0, p.stderr)
+        st = json.loads(p.stdout)
+        defaults = st.get("defaults", [])
+        self.assertTrue(any(self._nc(d) == self._nc(gj) for d in defaults))   # 전역 = default
+        self.assertFalse(any(self._nc(d) == self._nc(pf) for d in defaults))  # 프로젝트 = default 아님
+        # UI 불변식: renderTracked 는 defaults(원문 문자열) 집합에 버킷 경로를 .has() 로 매칭.
+        # 따라서 모든 default 문자열이 status 버킷에 byte-identical 로 존재해야 배지가 안 깨진다.
+        bset = {x for k in ("new", "modified", "deleted", "unchanged") for x in st.get(k, [])}
+        for d in defaults:
+            self.assertIn(d, bset, f"default {d!r} 가 status 버킷과 정규화 불일치 -> UI 전역/프로젝트 배지 깨짐")
+
+
 class DesktopPathResolve(unittest.TestCase):
     r"""paths.py: Claude Desktop 데이터 디렉토리 해석 (설치 방식별 겸용).
       Win32 설치본 :  %APPDATA%\Claude

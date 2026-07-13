@@ -93,6 +93,15 @@
   .fbadge.modified{background:var(--warnbg);color:var(--warn)}
   .fbadge.new{background:var(--okbg);color:var(--ok)}
   .fbadge.deleted{background:var(--delbg);color:var(--del)}
+  /* 전역(editable) vs 프로젝트(view-only) 구분 배지 */
+  .file .kind{font-size:10px;font-weight:600;padding:1px 6px;border-radius:20px;white-space:nowrap;flex:0 0 auto;
+    border:1px solid transparent}
+  .file .kind.kglobal{background:#EEF1F6;color:var(--mut2);border-color:var(--line2)}
+  .file .kind.kproject{background:#EFF4FF;color:var(--accent);border-color:#CFE0FF}
+  /* 프로젝트 행 추적 해제(×) 버튼 */
+  .file .untrackbtn{flex:0 0 auto;border:1px solid var(--line2);background:var(--panel);color:var(--mut2);
+    width:22px;height:22px;border-radius:5px;font-size:14px;line-height:1;cursor:pointer;padding:0}
+  .file .untrackbtn:hover{border-color:var(--del);color:var(--del);background:var(--delbg)}
 
   /* config sections (collapsible) */
   .sec{border:1px solid var(--line);border-radius:8px;background:var(--panel);margin-bottom:11px;overflow:hidden;

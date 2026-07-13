@@ -76,6 +76,29 @@ export function buildTools(scriptDir: string): ToolDef[] {
       run: async () => jsonResult(await runPy("cas.py", ["status", "--json"])),
     },
     {
+      name: "config_track",
+      meta: {
+        title: "Track Config Path",
+        description: "설정 파일/폴더를 스냅샷 추적 대상에 추가(감시 전용). 프로젝트 폴더나 .claude 를 주면 " +
+          "settings.json + settings.local.json 을 자동 감지, 파일 경로면 그 파일만. 편집은 하지 않음",
+        inputSchema: z.object({
+          path: z.string().describe("프로젝트 폴더 / .claude 폴더 / 설정 파일의 절대경로"),
+        }), annotations: WRITE,
+      },
+      run: async (a: { path: string }) => jsonResult(await runPy("cas.py", ["track", "--json", a.path])),
+    },
+    {
+      name: "config_untrack",
+      meta: {
+        title: "Untrack Config Path",
+        description: "추적 목록에서 파일을 제거(파일 자체는 그대로). 프로젝트 추적 행 제거용",
+        inputSchema: z.object({
+          path: z.string().describe("추적 중인 파일의 절대경로(행에 표시된 경로)"),
+        }), annotations: WRITE,
+      },
+      run: async (a: { path: string }) => jsonResult(await runPy("cas.py", ["untrack", "--json", a.path])),
+    },
+    {
       name: "get_file_history",
       meta: {
         title: "Get File History",

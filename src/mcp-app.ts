@@ -29,6 +29,10 @@ const I18N: Record<string, Record<string, string>> = {
     fullscreen: "전체화면", windowed: "창 모드",
     watcherOn: "watcher 실행 중", watcherOff: "watcher 정지",
     trackedFiles: "추적 파일", clickHint: "클릭 → 이력 / diff",
+    kindGlobal: "전역", kindProject: "프로젝트",
+    trackPathPlaceholder: "프로젝트 폴더 / .claude / 설정 파일 경로",
+    trackAdd: "추적 추가", trackNone: "추적할 설정 파일을 찾지 못함", trackAlready: "이미 추적 중",
+    untrack: "추적 해제", untracked: "추적 해제됨", untrackConfirm: "해제확정",
     settings: "설정", settingsHint: "8 카테고리 · 출처 경로 포함",
     source: "출처", remove: "제거", del: "삭제", cancel: "취소", add: "추가",
     permPlaceholder: "예: Bash(npm run*)", hookPlaceholder: "hook 명령어",
@@ -69,6 +73,10 @@ const I18N: Record<string, Record<string, string>> = {
     fullscreen: "Fullscreen", windowed: "Exit fullscreen",
     watcherOn: "watcher running", watcherOff: "watcher stopped",
     trackedFiles: "Tracked files", clickHint: "click → history / diff",
+    kindGlobal: "Global", kindProject: "Project",
+    trackPathPlaceholder: "Project folder / .claude / config file path",
+    trackAdd: "Track", trackNone: "No config files found to track", trackAlready: "Already tracked",
+    untrack: "Untrack", untracked: "Untracked", untrackConfirm: "Confirm",
     settings: "Settings", settingsHint: "8 categories · with source paths",
     source: "Source", remove: "Remove", del: "Delete", cancel: "Cancel", add: "Add",
     permPlaceholder: "e.g. Bash(npm run*)", hookPlaceholder: "hook command",
@@ -162,9 +170,60 @@ function flashToast(msg: string): void {
 // 파일 상태 배지 라벨(현재 lang 반영). new/deleted 는 핸드오프 사전에 없어 newFile/deleted 키를 추가했다.
 const statusLabel = (st: string): string =>
   (({ new: t("newFile"), modified: t("modified"), deleted: t("deleted"), unchanged: t("unchanged") } as Record<string, string>)[st] || st);
+// 경로 추가 입력행: 프로젝트 폴더/.claude/파일 경로 -> config_track(프리셋 자동 감지).
+function buildTrackAdder(): HTMLElement {
+  const adder = document.createElement("div");
+  adder.className = "adder";
+  const input = document.createElement("input");
+  input.placeholder = t("trackPathPlaceholder");
+  const btn = document.createElement("button");
+  btn.className = "addbtn";
+  btn.textContent = t("trackAdd");
+  const submit = async () => {
+    const v = input.value.trim();
+    if (!v) return;
+    btn.textContent = "…";
+    try {
+      const r = jparse(await callTool("config_track", { path: v }));
+      const added = r && Array.isArray(r.added) ? r.added.length : 0;
+      const already = r && Array.isArray(r.already) ? r.already.length : 0;
+      flashToast(added ? `${t("trackAdd")} ${added} · ${t("done")}` : already ? t("trackAlready") : t("trackNone"));
+      input.value = "";
+      await refresh();
+    } catch (e) { btn.textContent = t("failed"); console.error("[config-monitor] track add", e); }
+  };
+  btn.addEventListener("click", submit);
+  input.addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") submit(); });
+  adder.append(input, btn);
+  return adder;
+}
+
+// 프로젝트(전역 아님) 행에만 붙는 추적 해제(×) 버튼. 2-click 확인. 파일 자체는 안 지움.
+function buildUntrackBtn(p: string): HTMLElement {
+  const b = document.createElement("button");
+  b.className = "untrackbtn";
+  b.textContent = "×";
+  b.title = t("untrack");
+  b.addEventListener("click", async (e) => {
+    e.stopPropagation();                         // 행 클릭(패널 열기)과 분리
+    if (b.dataset.confirm !== "1") { b.dataset.confirm = "1"; b.textContent = t("untrackConfirm"); return; }
+    b.textContent = "…";
+    try {
+      const r = jparse(await callTool("config_untrack", { path: p }));
+      if (r && r.ok === false) { flashToast(r.message || t("failed")); return; }
+      flashToast(t("untracked"));
+      await refresh();
+    } catch (err) { b.textContent = t("failed"); console.error("[config-monitor] untrack", err); }
+  });
+  return b;
+}
+
 function renderTracked(status: any): number {
   const host = $("tracked");
   host.innerHTML = "";
+  host.appendChild(buildTrackAdder());
+  // status.defaults = 전역(기본 추적) 대상 경로 목록 -> 전역(editable) vs 프로젝트(view-only) 구분.
+  const defaults = new Set<string>(Array.isArray(status.defaults) ? status.defaults : []);
   const list = document.createElement("div");
   list.className = "files";
   const rows: [string, string][] = [];
@@ -175,14 +234,24 @@ function renderTracked(status: any): number {
     list.innerHTML = `<div class="empty">${esc(t("emptyTracked"))}</div>`;
   }
   for (const [p, st] of rows) {
+    const global = defaults.has(p);
     const row = document.createElement("div");
     row.className = "file" + (p === selectedPath ? " sel" : "");
     row.innerHTML =
       `<span class="fbadge ${st}">${esc(statusLabel(st))}</span>` +
+      `<span class="kind ${global ? "kglobal" : "kproject"}">${esc(global ? t("kindGlobal") : t("kindProject"))}</span>` +
       `<div class="fmeta"><div class="fname">${esc(basename(p))}</div>` +
-      `<div class="fdir">${esc(dirname(p))}</div></div>` +
-      `<span class="chev">›</span>`;
+      `<div class="fdir">${esc(dirname(p))}</div></div>`;
     row.addEventListener("click", () => selectFile(p));
+    // 프로젝트 행: 추적 해제(×). 전역 행: 열기 화살표(기본 감시 대상이라 제거 불가).
+    if (global) {
+      const chev = document.createElement("span");
+      chev.className = "chev";
+      chev.textContent = "›";
+      row.appendChild(chev);
+    } else {
+      row.appendChild(buildUntrackBtn(p));
+    }
     list.appendChild(row);
   }
   host.appendChild(list);

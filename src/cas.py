@@ -29,12 +29,13 @@ DEFAULT_STORE = os.environ.get("CLAUDE_SNAPSHOT_STORE") or (
 
 # 존재하면 자동 추적할 기본 대상. untrack 으로 명시 제외한 항목(ignore_defaults)은 다시 넣지 않는다.
 # CLAUDE_CAS_NO_DEFAULT_TRACK=1 이면 병합 자체를 끈다(테스트/특수 상황용).
+import paths  # Win32/MSIX 겸용 Desktop config 경로 해석(read/write 와 동일 대상)
+
 _HOME = os.path.expanduser("~")
 DEFAULT_TRACKED = [
     os.path.join(_HOME, ".claude.json"),
     os.path.join(_HOME, ".claude", "settings.json"),
-    os.path.join(os.environ.get("APPDATA", os.path.join(_HOME, "AppData", "Roaming")),
-                 "Claude", "claude_desktop_config.json"),
+    paths.desktop_config_path(),   # 설치 방식(Win32/MSIX)에 맞는 실제 desktop config
 ]
 
 def _parse_iso(s):
@@ -118,6 +119,12 @@ def expand_tracked(tracked):
             files.add(os.path.abspath(pat))
     return files
 
+def norm_entry(entry):
+    """단일 파일 tracked 항목을 expand_tracked 와 '동일하게' 정규화.
+    status 버킷(new/unchanged/...)에 담기는 문자열과 byte-identical 하게 맞춰,
+    UI 가 defaults 로 전역/프로젝트 행을 정확히 매칭하게 한다(경로 구분자/~/env 정규화)."""
+    return os.path.abspath(os.path.expanduser(os.path.expandvars(entry)))
+
 def file_stat(path):
     st = os.lstat(path)
     return {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "mode": st.st_mode}
@@ -166,32 +173,71 @@ def cmd_init(args):
         save_json(p["index"], {})
     print(f"초기화 완료: {args.store}")
 
+# 프로젝트 .claude 를 추적할 때 자동 감지할 설정 파일(존재하는 것만). 나머지는 파일 경로 직접 add.
+PROJECT_PRESET = ("settings.json", "settings.local.json")
+
+def _claude_dir_of(path):
+    """설정 파일이 있을 '.claude' 폴더 해석: 프로젝트 루트를 주면 <root>/.claude,
+    .claude 를 직접 주면 그 폴더."""
+    sub = os.path.join(path, ".claude")
+    return sub if os.path.isdir(sub) else path
+
+def _expand_track_path(path):
+    """디렉토리는 프로젝트 프리셋(존재하는 settings*.json)으로 확장, 파일/글롭은 그대로 반환."""
+    if any(c in path for c in "*?[]"):
+        return [path]                                   # 글롭은 원문 유지(status 시 확장)
+    ap = os.path.abspath(os.path.expanduser(path))
+    if os.path.isdir(ap):
+        cdir = _claude_dir_of(ap)
+        return [os.path.join(cdir, n) for n in PROJECT_PRESET
+                if os.path.isfile(os.path.join(cdir, n))]
+    return [ap]                                         # 파일(미존재도 명시 추적 허용)
+
+def _norm_targets(paths_):
+    """untrack 비교용: 파일 경로는 abspath 로도 확장(track 이 abspath 로 저장)."""
+    out = set()
+    for t in paths_:
+        out.add(t)
+        if not any(c in t for c in "*?[]"):
+            out.add(os.path.abspath(os.path.expanduser(t)))
+    return out
+
 def cmd_track(args):
     p = store_paths(args.store)
     config = load_json(p["config"], {"version": 1, "tracked": []})
-    added = []
+    added, already = [], []
     for path in args.paths:
-        ap = os.path.abspath(os.path.expanduser(path)) if not any(c in path for c in "*?[]") else path
-        if ap not in config["tracked"]:
-            config["tracked"].append(ap)
-            added.append(ap)
+        for ap in _expand_track_path(path):
+            if ap in config["tracked"]:
+                already.append(ap)
+            else:
+                config["tracked"].append(ap)
+                added.append(ap)
     save_json(p["config"], config)
-    print("추가됨:\n  " + "\n  ".join(added) if added else "이미 모두 추적 중")
+    if getattr(args, "json", False):
+        print(json.dumps({"ok": True, "added": added, "already": already}, ensure_ascii=False))
+    else:
+        print("추가됨:\n  " + "\n  ".join(added) if added else "추가할 파일 없음 / 이미 추적 중")
 
 def cmd_untrack(args):
     p = store_paths(args.store)
     config = load_json(p["config"], {"version": 1, "tracked": []})
     before = len(config["tracked"])
-    config["tracked"] = [t for t in config["tracked"] if t not in args.paths]
+    targets = _norm_targets(args.paths)
+    config["tracked"] = [t for t in config["tracked"] if t not in targets]
     # 기본 추적 대상을 명시적으로 뺀 경우, load_config 의 자동 병합이 되살리지 않도록 기록.
     ignored = set(config.get("ignore_defaults", []))
-    for t in args.paths:
+    for t in targets:
         if t in DEFAULT_TRACKED:
             ignored.add(t)
     if ignored:
         config["ignore_defaults"] = sorted(ignored)
     save_json(p["config"], config)
-    print(f"제거됨: {before - len(config['tracked'])}개")
+    removed = before - len(config["tracked"])
+    if getattr(args, "json", False):
+        print(json.dumps({"ok": True, "removed": removed}, ensure_ascii=False))
+    else:
+        print(f"제거됨: {removed}개")
 
 def cmd_status(args):
     p = store_paths(args.store)
@@ -199,7 +245,11 @@ def cmd_status(args):
     index = load_json(p["index"], {})
     result, _ = scan(p, config, index, rehash=False)
     if args.json:  # 머신용: 순수 JSON 만
-        print(json.dumps({k: result[k] for k in result}, ensure_ascii=False))
+        out = {k: result[k] for k in result}
+        # 전역(기본 추적) 대상 분류용. UI 가 전역(editable) vs 프로젝트(view-only) 행 구분에 사용.
+        # 버킷 문자열과 동일 정규화(norm_entry)로 내보내야 UI 의 정확 매칭이 성립.
+        out["defaults"] = [norm_entry(t) for t in config.get("tracked", []) if t in DEFAULT_TRACKED]
+        print(json.dumps(out, ensure_ascii=False))
         return
     def show(key, sym):
         for path in result[key]:
@@ -397,8 +447,10 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("init").set_defaults(func=cmd_init)
-    sp = sub.add_parser("track"); sp.add_argument("paths", nargs="+"); sp.set_defaults(func=cmd_track)
-    sp = sub.add_parser("untrack"); sp.add_argument("paths", nargs="+"); sp.set_defaults(func=cmd_untrack)
+    sp = sub.add_parser("track"); sp.add_argument("paths", nargs="+")
+    sp.add_argument("--json", action="store_true"); sp.set_defaults(func=cmd_track)
+    sp = sub.add_parser("untrack"); sp.add_argument("paths", nargs="+")
+    sp.add_argument("--json", action="store_true"); sp.set_defaults(func=cmd_untrack)
     sp = sub.add_parser("status"); sp.add_argument("--json", action="store_true"); sp.set_defaults(func=cmd_status)
     sp = sub.add_parser("snapshot"); sp.add_argument("-m", "--message", default="")
     sp.add_argument("--force", action="store_true"); sp.set_defaults(func=cmd_snapshot)
