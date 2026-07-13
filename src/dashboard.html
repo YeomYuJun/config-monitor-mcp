@@ -134,6 +134,8 @@
   .chip{display:inline-flex;align-items:center;gap:7px;background:#F3F4F6;border:1px solid var(--line2);
     border-radius:5px;padding:3px 6px 3px 9px;font-family:var(--mono);font-size:11px;color:var(--fg2)}
   .chip .ctxt{word-break:break-all}
+  .chip .libenv{font-size:9px;letter-spacing:.04em;text-transform:uppercase;color:var(--mut3);
+    background:#E6E8EC;border-radius:3px;padding:1px 5px;flex:0 0 auto}
   .chip .cx{border:none;background:none;color:var(--mut3);cursor:pointer;font-size:12px;padding:0 1px;line-height:1}
   .chip .cx:hover{color:var(--del)}
   .chip .ok{border:none;background:var(--del);color:#fff;border-radius:4px;padding:1px 7px;font-size:10px;cursor:pointer}
@@ -199,6 +201,9 @@
   .dl.hunk{background:#EDF1FD;color:var(--accent);font-weight:500}
   .diffempty{border:1px dashed #D7DAE0;border-radius:6px;padding:22px;text-align:center;color:var(--mut2);
     font-size:13px;background:#FBFBFC;margin-top:12px}
+  /* Diff 접이식(curbody) 안에서는 내부 박스가 껍데기를 꽉 채우도록 자체 테두리/마진 제거 */
+  #diff-area .diffwrap{margin-top:0;border:none;border-radius:0;box-shadow:none}
+  #diff-area .diffempty{margin:12px}
 
   /* 현재 파일 내용 뷰어 (읽기 전용, 기본 접힘) */
   .curwrap{border:1px solid var(--line2);border-radius:6px;background:var(--panel);margin-top:24px;overflow:hidden}

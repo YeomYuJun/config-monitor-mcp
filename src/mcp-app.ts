@@ -57,6 +57,8 @@ const I18N: Record<string, Record<string, string>> = {
     toastReportOpened: "브라우저에서 리포트 열림", toastReportFail: "리포트 실패", toastTabOpened: "브라우저 탭 열림", toastOpenFail: "열기 실패",
     collapseAll: "전부 접기", collapseAllTitle: "펼쳐진 설정 분류를 전부 접기",
     selectFilePrompt: "파일 선택", selectFileHint: "왼쪽에서 추적 파일을 클릭하세요",
+    libPaths: "라이브러리 경로", libPathRemoved: "경로 제거됨", libEnvTag: "env",
+    libEnvHint: "환경변수(CLAUDE_CONFIG_LIBRARIES)로 지정되어 대시보드에서 제거 불가",
   },
   en: {
     newFile: "New", modified: "Modified", deleted: "Deleted", unchanged: "Same",
@@ -93,6 +95,8 @@ const I18N: Record<string, Record<string, string>> = {
     toastReportOpened: "Report opened in browser", toastReportFail: "Report failed", toastTabOpened: "Browser tab opened", toastOpenFail: "Open failed",
     collapseAll: "Collapse all", collapseAllTitle: "Collapse all expanded categories",
     selectFilePrompt: "Select a file", selectFileHint: "Click a tracked file on the left",
+    libPaths: "Library paths", libPathRemoved: "Path removed", libEnvTag: "env",
+    libEnvHint: "Set via CLAUDE_CONFIG_LIBRARIES env; can't be removed from the dashboard",
   },
 };
 
@@ -393,6 +397,29 @@ function buildAddUI(edit: any): HTMLElement {
 const libStatus = (s: string): [string, string] =>
   (({ not_installed: [t("libNotInstalled"), ""], installed: [t("libInstalled"), "ok"], modified: [t("libModified"), "warn"] } as Record<string, [string, string]>)[s] || [s, ""]);
 
+// 라이브러리 경로 등록 입력행. 여러 경로 등록 가능(백엔드가 config.json libraries 배열에 멱등 append).
+// 빈 상태 등록 UI 와 채워진 목록의 "경로 추가" 양쪽에서 재사용.
+function buildLibAdder(): HTMLElement {
+  const adder = document.createElement("div");
+  adder.className = "adder";
+  const input = document.createElement("input");
+  input.placeholder = t("libPathPlaceholder");
+  const btn = document.createElement("button");
+  btn.className = "addbtn";
+  btn.textContent = t("libRegister");
+  const submit = async () => {
+    const v = input.value.trim();
+    if (!v) return;
+    btn.textContent = "…";
+    try { await callTool("library_scan", { lib: v }); flashToast(t("libRegistered")); await refresh(); }
+    catch (e) { btn.textContent = t("failed"); console.error("[config-monitor] lib register", e); }
+  };
+  btn.addEventListener("click", submit);
+  input.addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") submit(); });
+  adder.append(input, btn);
+  return adder;
+}
+
 function renderLibrary(host: HTMLElement, res: any): void {
   const secEl = document.createElement("div");
   secEl.className = "sec" + (collapsed.has("Library") ? " collapsed" : "");
@@ -452,6 +479,61 @@ function renderLibrary(host: HTMLElement, res: any): void {
     row.appendChild(act);
     body.appendChild(row);
   }
+  // 다중 라이브러리 경로 관리(전체 폭): 등록된 경로 목록(제거 가능) + 신규 경로 등록 입력행.
+  // env(CLAUDE_CONFIG_LIBRARIES) 지정 경로는 대시보드에서 제거 불가 -> env 태그만 표시.
+  const mkPathChip = (l: any): HTMLElement => {
+    const chip = document.createElement("div");
+    chip.className = "chip";
+    const txt = document.createElement("span");
+    txt.className = "ctxt";
+    txt.textContent = l.lib + (l.error ? ` · ${l.error}` : "");
+    chip.appendChild(txt);
+    if (l.source === "env") {
+      const tag = document.createElement("span");
+      tag.className = "libenv";
+      tag.textContent = t("libEnvTag");
+      tag.title = t("libEnvHint");
+      chip.appendChild(tag);
+      return chip;
+    }
+    const x = document.createElement("button");
+    x.className = "cx";
+    x.textContent = "✕";
+    x.title = t("remove");
+    x.addEventListener("click", () => {
+      const ok = document.createElement("button");
+      ok.className = "ok";
+      ok.textContent = t("remove");
+      const no = document.createElement("button");
+      no.className = "no";
+      no.textContent = t("cancel");
+      chip.replaceChildren(txt, ok, no);
+      no.addEventListener("click", () => chip.replaceWith(mkPathChip(l)));
+      ok.addEventListener("click", async () => {
+        ok.textContent = "…";
+        try {
+          const r = jparse(await callTool("library_unregister", { lib: l.lib }));
+          if (r && r.ok === false) { flashToast(r.message || t("failed")); chip.replaceWith(mkPathChip(l)); return; }
+          flashToast(t("libPathRemoved") + " · " + basename(l.lib));
+          await refresh();
+        } catch (e) { flashToast(t("failed")); console.error("[config-monitor] lib unregister", e); chip.replaceWith(mkPathChip(l)); }
+      });
+    });
+    chip.appendChild(x);
+    return chip;
+  };
+  const pathsWrap = document.createElement("div");
+  pathsWrap.style.gridColumn = "1 / -1";
+  const pathsLbl = document.createElement("div");
+  pathsLbl.className = "dlabel";
+  pathsLbl.style.margin = "2px 0 7px";
+  pathsLbl.textContent = t("libPaths");
+  const chipsBox = document.createElement("div");
+  chipsBox.className = "chips";
+  chipsBox.style.marginBottom = "9px";
+  for (const l of libs) chipsBox.appendChild(mkPathChip(l));
+  pathsWrap.append(pathsLbl, chipsBox, buildLibAdder());
+  body.appendChild(pathsWrap);
   secEl.appendChild(body);
   host.appendChild(secEl);
 }
@@ -471,22 +553,7 @@ async function refreshLibrary(): Promise<void> {
     `<span class="sectitle">${esc(t("libSectionTitle"))}</span><span class="seccount">${esc(t("libUnregistered"))}</span></div></div>`;
   const body = document.createElement("div");
   body.className = "secbody";
-  const adder = document.createElement("div");
-  adder.className = "adder";
-  const input = document.createElement("input");
-  input.placeholder = t("libPathPlaceholder");
-  const btn = document.createElement("button");
-  btn.className = "addbtn";
-  btn.textContent = t("libRegister");
-  btn.addEventListener("click", async () => {
-    const v = input.value.trim();
-    if (!v) return;
-    btn.textContent = "…";
-    try { await callTool("library_scan", { lib: v }); flashToast(t("libRegistered")); await refresh(); }
-    catch (e) { btn.textContent = t("failed"); console.error("[config-monitor] lib register", e); }
-  });
-  adder.append(input, btn);
-  body.appendChild(adder);
+  body.appendChild(buildLibAdder());
   secEl.appendChild(body);
   host.appendChild(secEl);
 }
@@ -576,15 +643,14 @@ function renderHistory(): void {
   list.appendChild(tl);
   body.appendChild(list);
 
-  const dl = document.createElement("div");
-  dl.className = "dlabel";
-  dl.style.marginTop = "24px";
-  dl.textContent = "Diff";
-  body.appendChild(dl);
-
-  const diffArea = document.createElement("div");
-  diffArea.id = "diff-area";
-  body.appendChild(diffArea);
+  // Diff 접이식(현재 파일 내용 뷰어와 동일한 curwrap 패턴). 기본 펼침.
+  const diffWrap = document.createElement("div");
+  diffWrap.className = "curwrap open";
+  diffWrap.innerHTML =
+    `<div class="curhead"><span class="chev3">▸</span><span>Diff</span></div>` +
+    `<div class="curbody"><div id="diff-area"></div></div>`;
+  diffWrap.querySelector(".curhead")!.addEventListener("click", () => diffWrap.classList.toggle("open"));
+  body.appendChild(diffWrap);
 
   // 현재 파일 내용 뷰어 — 기본 접힘, 첫 펼침 때 lazy 조회. 보기 전용(편집 아님).
   const cur = document.createElement("div");
@@ -748,32 +814,62 @@ async function refreshWatcher(): Promise<boolean> {
   return running;
 }
 
-// ----- display mode (MCP 네이티브 fullscreen; 브라우저 requestFullscreen 은 iframe 에서 막힘) -----
-function applyDisplayMode(mode: string): void {
-  const full = mode === "fullscreen";
-  $("app").classList.toggle("fullscreen", full);
-  const label = full ? t("windowed") : t("fullscreen");
-  $("fullscreen-label").textContent = label;
-  ($("fullscreen") as HTMLButtonElement).title = label;   // 아이콘 버튼 툴팁
+// ----- display mode -----
+// MCP: 호스트 네이티브 requestDisplayMode. 브라우저(standalone): 네이티브 Fullscreen API.
+// (localhost 직접 서빙이라 iframe 제약이 없어 requestFullscreen 이 동작한다.)
+function fullscreenActive(): boolean {
+  // standalone 은 항상 .app.fullscreen(100vh)이라 클래스로 판별 불가 -> 실제 브라우저 전체화면 상태로 판별.
+  return STANDALONE ? !!document.fullscreenElement : $("app").classList.contains("fullscreen");
 }
+function syncFullscreenLabel(): void {
+  const label = fullscreenActive() ? t("windowed") : t("fullscreen");
+  $("fullscreen-label").textContent = label;
+  ($("fullscreen") as HTMLButtonElement).title = label;
+}
+function applyDisplayMode(mode: string): void {
+  $("app").classList.toggle("fullscreen", mode === "fullscreen");
+  syncFullscreenLabel();
+}
+// 라이브 대시보드를 기본 브라우저에서 연다(서버 필요시 자동 기동). 브라우저에선 네이티브 전체화면 가능.
+async function openInBrowser(): Promise<void> {
+  flashToast(t("toastBrowser"));
+  try { await callTool("open_in_browser"); flashToast(t("toastTabOpened")); }
+  catch (e) { flashToast(t("toastOpenFail")); console.error("[config-monitor] open_in_browser", e); }
+}
+// 브라우저 전용 전체화면 토글(네이티브 Fullscreen API).
+async function toggleBrowserFullscreen(): Promise<void> {
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else await document.documentElement.requestFullscreen();
+  } catch (e) { console.error("[config-monitor] requestFullscreen", e); flashToast(t("displayModeFail")); }
+}
+// MCP 위젯 전체화면: 호스트에 requestDisplayMode 요청 -> 호스트가 iframe 을 키우면 .app.fullscreen(100vh)로 채움.
+// [진단용] 호스트가 실제로 뭘 광고/반환하는지 오래 유지되는 토스트로 노출(원인 규명 후 제거 예정).
 async function toggleFullscreen(): Promise<void> {
-  const cur = (app.getHostContext() as any)?.displayMode || "inline";
+  const ctx = (app.getHostContext() as any) || {};
+  const avail = ctx.availableDisplayModes;
+  const cur = ctx.displayMode || "inline";
   const next = cur === "fullscreen" ? "inline" : "fullscreen";
+  let line = `[DM] avail=${JSON.stringify(avail ?? null)} cur=${cur} req=${next}`;
   try {
     const res: any = await app.requestDisplayMode({ mode: next as any });
+    line += ` -> res.mode=${JSON.stringify(res?.mode ?? res)}`;
     applyDisplayMode(res?.mode || next);
   } catch (e) {
+    line += ` -> ERROR: ${String(e)}`;
     console.error("[config-monitor] requestDisplayMode", e);
-    flashToast(t("displayModeFail"));
   }
+  console.log("[config-monitor]", line, ctx);
+  const el = $("toast");
+  el.textContent = line;
+  el.style.display = "block";
+  if (toastT) clearTimeout(toastT);
+  toastT = window.setTimeout(() => { el.style.display = "none"; }, 12000);
 }
-// 호스트가 지원하는 모드에 fullscreen 이 없으면 버튼 숨김.
+// 전체화면 버튼은 항상 노출한다. 호스트가 fullscreen 모드를 지원하지 않으면 클릭 시 toast 로 안내.
 function syncDisplayModeButton(): void {
   const ctx = app.getHostContext() as any;
-  const modes: string[] = ctx?.availableDisplayModes || [];
-  const btn = $("fullscreen");
-  if (modes.length && !modes.includes("fullscreen")) btn.style.display = "none";
-  else btn.style.display = "";
+  $("fullscreen").style.display = "";
   applyDisplayMode(ctx?.displayMode || "inline");
 }
 
@@ -819,12 +915,8 @@ function applyLang(): void {
   ($("lang-toggle") as HTMLButtonElement).title = t("langTitle");
   document.querySelectorAll<HTMLElement>("[data-i18n]").forEach((el) => { el.textContent = t(el.dataset.i18n!); });
   document.querySelectorAll<HTMLElement>("[data-i18n-title]").forEach((el) => { el.title = t(el.dataset.i18nTitle!); });
-  // refresh() 밖에서 세팅되는 두 라벨은 여기서 직접 갱신:
-  //   전체화면 툴팁(모드 의존), 설명 줄 수 접미사(값+접미사).
-  const full = $("app").classList.contains("fullscreen");
-  const fsLabel = full ? t("windowed") : t("fullscreen");
-  $("fullscreen-label").textContent = fsLabel;
-  ($("fullscreen") as HTMLButtonElement).title = fsLabel;
+  // refresh() 밖에서 세팅되는 라벨은 여기서 직접 갱신: 전체화면 툴팁(모드 의존) / 설명 줄 수 접미사(값+접미사).
+  syncFullscreenLabel();
   const linesEl = document.getElementById("opt-lines") as HTMLInputElement | null;
   if (linesEl) $("opt-lines-val").textContent = linesEl.value + t("linesSuffix");
   // sel-name/sel-path 는 파일 선택 시 파일명/경로(데이터)로 덮이므로, 미선택 상태의 안내문일 때만 번역.
@@ -866,21 +958,26 @@ $("panel-close").addEventListener("click", () => { detailOpen = false; applyDeta
 $("panel-reopen").addEventListener("click", () => { detailOpen = true; applyDetailState(); });
 
 if (STANDALONE) {
-  // 이미 브라우저 안 -> 뷰포트 꽉 채우고(고정 660px 대신 100vh), MCP 전용 버튼 숨김, 브리지 없이 바로 로드.
+  // 이미 브라우저 안 -> 뷰포트 꽉 채움(고정 660px 대신 100vh). open-browser 는 불필요하므로 숨김.
   $("app").classList.add("fullscreen");
-  $("fullscreen").style.display = "none";
   $("open-browser").style.display = "none";
+  // 브라우저에서도 전체화면 버튼 동작: 네이티브 Fullscreen API + 상태 변화 시 라벨 동기화.
+  $("fullscreen").addEventListener("click", toggleBrowserFullscreen);
+  document.addEventListener("fullscreenchange", syncFullscreenLabel);
+  syncFullscreenLabel();
   refresh();
 } else {
   $("fullscreen").addEventListener("click", toggleFullscreen);
-  $("open-browser").addEventListener("click", async () => {
-    flashToast(t("toastBrowser"));
-    try { await callTool("open_in_browser"); flashToast(t("toastTabOpened")); }
-    catch (e) { flashToast(t("toastOpenFail")); console.error("[config-monitor] open_in_browser", e); }
-  });
+  $("open-browser").addEventListener("click", openInBrowser);
   // 호스트 컨텍스트 변경(디스플레이 모드 등) 반영. connect 전에 등록.
   app.onhostcontextchanged = () => syncDisplayModeButton();
   app.connect()
     .then(() => { syncDisplayModeButton(); return refresh(); })
+    .then(() => {
+      // [진단용] 접속 직후 호스트가 광고하는 display mode 목록/현재 모드를 부제에 노출.
+      const ctx = app.getHostContext() as any;
+      $("subtitle").textContent += `  ·  DM avail=${JSON.stringify(ctx?.availableDisplayModes ?? null)} cur=${ctx?.displayMode || "inline"}`;
+      console.log("[config-monitor] hostContext", ctx);
+    })
     .catch((e: unknown) => console.error("[config-monitor] connect failed", e));
 }

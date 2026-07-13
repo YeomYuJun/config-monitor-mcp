@@ -89,13 +89,17 @@ def _store_config_path(store):
     return os.path.join(store, "config.json")
 
 
+def _env_libs():
+    """CLAUDE_CONFIG_LIBRARIES(os.pathsep 구분 복수 경로). env 지정분은 대시보드에서 제거 불가."""
+    return [p.strip() for p in os.environ.get("CLAUDE_CONFIG_LIBRARIES", "").split(os.pathsep) if p.strip()]
+
+
 def _load_libs(store):
     """라이브러리 목록 = env(선언적) + store 등록분(런타임 등록), 순서 유지 중복 제거.
-    CLAUDE_CONFIG_LIBRARIES 는 os.pathsep(;/:) 구분 복수 경로 — env 에서 빼면 목록에서도 빠진다."""
+    CLAUDE_CONFIG_LIBRARIES 는 os.pathsep(;/:) 구분 복수 경로 - env 에서 빼면 목록에서도 빠진다."""
     libs = []
-    for p in os.environ.get("CLAUDE_CONFIG_LIBRARIES", "").split(os.pathsep):
-        p = p.strip()
-        if p and p not in libs:
+    for p in _env_libs():
+        if p not in libs:
             libs.append(p)
     cfg_path = _store_config_path(store)
     if os.path.exists(cfg_path):
@@ -120,6 +124,24 @@ def _register_lib(store, lib):
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(cfg, f, ensure_ascii=False, indent=2)
         os.replace(tmp, p)
+    return True
+
+
+def _unregister_lib(store, lib):
+    """store config.json 의 libraries 에서 경로 제거(멱등). env 지정 경로는 여기서 못 지운다."""
+    p = _store_config_path(store)
+    if not os.path.exists(p):
+        return False
+    with open(p, encoding="utf-8") as f:
+        cfg = json.load(f)
+    libs = cfg.get("libraries", [])
+    if lib not in libs:
+        return False
+    cfg["libraries"] = [x for x in libs if x != lib]
+    tmp = p + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, p)
     return True
 
 
@@ -164,10 +186,13 @@ def cmd_scan(a):
         # 미설정은 오류가 아니라 정상 상태(라이브러리 기능 미사용). 빈 결과로 응답.
         print(json.dumps({"ok": True, "target": a.target, "libraries": []}, ensure_ascii=False))
         return
+    env = set(_env_libs())
     result = []
     for lib in libs:
+        # source: env(제거 불가) / registered(대시보드에서 제거 가능)
+        src = "env" if lib in env else "registered"
         if not os.path.isdir(lib):
-            result.append({"lib": lib, "error": "경로 없음", "categories": {}})
+            result.append({"lib": lib, "source": src, "error": "경로 없음", "categories": {}})
             continue
         cats = {}
         for category in CATEGORIES:
@@ -182,8 +207,18 @@ def cmd_scan(a):
                     "target": tgt,
                 })
             cats[category] = items
-        result.append({"lib": lib, "categories": cats})
+        result.append({"lib": lib, "source": src, "categories": cats})
     print(json.dumps({"ok": True, "target": a.target, "libraries": result}, ensure_ascii=False))
+
+
+def cmd_unregister(a):
+    # scan 처럼 항상 exit 0 + JSON 으로 응답(runPy 가 nonzero exit 를 throw 하므로 out() 대신 print).
+    if not a.lib:
+        print(json.dumps({"ok": False, "message": "제거할 라이브러리 경로(--lib) 필요"}, ensure_ascii=False)); return
+    if a.lib in _env_libs():
+        print(json.dumps({"ok": False, "message": "환경변수(CLAUDE_CONFIG_LIBRARIES)로 지정된 경로는 제거할 수 없습니다"}, ensure_ascii=False)); return
+    removed = _unregister_lib(a.store, a.lib)
+    print(json.dumps({"ok": True, "message": "라이브러리 경로 제거됨" if removed else "이미 없음 (no-op)", "removed": removed}, ensure_ascii=False))
 
 
 def _resolve_item(a):
@@ -239,6 +274,8 @@ def main():
 
     p = sub.add_parser("scan"); p.add_argument("--lib", default=None)
     p.set_defaults(func=cmd_scan)
+    p = sub.add_parser("unregister"); p.add_argument("--lib", default=None)
+    p.set_defaults(func=cmd_unregister)
     p = sub.add_parser("install"); p.add_argument("category", choices=list(CATEGORIES))
     p.add_argument("name"); p.add_argument("--lib", default=None)
     p.set_defaults(func=cmd_install)

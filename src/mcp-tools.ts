@@ -360,6 +360,17 @@ export function buildTools(scriptDir: string): ToolDef[] {
       run: async (a: { category: string; name: string }) =>
         jsonResult(await runPy("library.py", ["uninstall", a.category, a.name])),
     },
+    {
+      name: "library_unregister",
+      meta: {
+        title: "Unregister Library Path",
+        description: "등록된 라이브러리 경로를 store/config.json 의 libraries 에서 제거(추적 해제). 설치된 항목·라이브러리 원본 디렉토리는 건드리지 않음. env(CLAUDE_CONFIG_LIBRARIES) 지정 경로는 제거 불가",
+        inputSchema: z.object({ lib: z.string().describe("등록 해제할 라이브러리 루트 경로") }),
+        annotations: EDIT,
+      },
+      run: async (a: { lib: string }) =>
+        jsonResult(await runPy("library.py", ["unregister", "--lib", a.lib])),
+    },
 
     // ----- 브라우저 열기 -----
     {
