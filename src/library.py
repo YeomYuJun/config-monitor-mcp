@@ -276,6 +276,11 @@ def _resolve_item(a):
 
 
 def cmd_install(a):
+    # phantom 방지: target(.claude 루트)의 부모(프로젝트 폴더 또는 HOME)가 실제로 존재해야 설치.
+    # 전역 ~/.claude 는 부모 ~ 가 항상 존재하므로 통과. 없는 프로젝트 경로에 .claude 를 만들지 않는다.
+    parent = os.path.dirname(os.path.normpath(a.target))
+    if parent and not os.path.isdir(parent):
+        out(False, f"설치 대상의 부모 디렉토리가 없음(phantom 방지): {parent}")
     src, kind, tgt = _resolve_item(a)
     existed = os.path.exists(tgt)
     if not a.no_snapshot:

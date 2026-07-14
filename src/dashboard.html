@@ -93,6 +93,20 @@
   .fbadge.modified{background:var(--warnbg);color:var(--warn)}
   .fbadge.new{background:var(--okbg);color:var(--ok)}
   .fbadge.deleted{background:var(--delbg);color:var(--del)}
+  /* 프로젝트에서 추가(.claude.json projects -> 원클릭 track) */
+  .projpick{margin:2px 0 8px}
+  .projpicktoggle{width:100%;text-align:left;background:var(--panel);border:1px dashed var(--line2);
+    border-radius:6px;padding:7px 10px;font-size:12px;color:var(--mut2);cursor:pointer}
+  .projpicktoggle:hover{border-color:var(--accent);color:var(--accent)}
+  .projpicklist{display:flex;flex-direction:column;gap:5px;margin-top:6px}
+  .projpickrow{display:flex;align-items:center;gap:8px;text-align:left;background:var(--panel);
+    border:1px solid var(--line2);border-radius:6px;padding:7px 10px;cursor:pointer}
+  .projpickrow:hover:not(:disabled){border-color:var(--accent)}
+  .projpickrow:disabled{opacity:.55;cursor:default}
+  .projpickrow .pnm{font-weight:600;font-size:12px;color:var(--fg);flex:0 0 auto}
+  .projpickrow .ppath{font-family:var(--mono);font-size:11px;color:var(--mut2);flex:1;min-width:0;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .projpickrow .ptag{font-size:10px;color:var(--ok);flex:0 0 auto}
   /* 전역(editable) vs 프로젝트(view-only) 구분 배지 */
   .file .kind{font-size:10px;font-weight:600;padding:1px 6px;border-radius:20px;white-space:nowrap;flex:0 0 auto;
     border:1px solid transparent}
@@ -168,6 +182,16 @@
   .chip .cx:hover{color:var(--del)}
   .chip .ok{border:none;background:var(--del);color:#fff;border-radius:4px;padding:1px 7px;font-size:10px;cursor:pointer}
   .chip .no{border:none;background:none;color:var(--mut);font-size:10px;cursor:pointer;padding:0 2px}
+  /* 라이브러리 설치 대상 선택기 (전역/프로젝트) */
+  .libtarget{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:2px 0 12px;padding:9px 11px;
+    background:#F4F6FA;border:1px solid var(--line2);border-radius:7px}
+  .libtarget .dlabel{margin:0;font-weight:600;color:var(--mut2);flex:0 0 auto}
+  .libtargetsel{background:var(--panel);border:1px solid var(--line2);border-radius:5px;padding:5px 8px;
+    font:12px var(--mono);color:var(--fg);max-width:100%}
+  .libtargetsel:focus{border-color:var(--accent);outline:none}
+  .libtargetinput{flex:1;min-width:140px;background:var(--panel);border:1px solid var(--line2);border-radius:5px;
+    padding:5px 8px;font:11.5px var(--mono);color:var(--fg)}
+  .libtargetinput:focus{border-color:var(--accent);outline:none}
   .adder{display:flex;gap:6px}
   .adder input{flex:1;min-width:0;background:#FBFBFC;border:1px solid var(--line2);border-radius:5px;
     padding:5px 9px;font-family:var(--mono);font-size:11px;color:var(--fg);outline:none}

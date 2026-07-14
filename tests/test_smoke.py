@@ -422,6 +422,27 @@ class LibraryToggle(unittest.TestCase):
         rc, out, err = self.libcmd("uninstall", "agents", "..\\evil")
         self.assertNotEqual(rc, 0)
 
+    def test_install_refuses_phantom_target(self):
+        # local 설치: target 의 부모(프로젝트 폴더)가 없으면 거부 — 엉뚱한 위치에 .claude 흩뿌리기 방지.
+        self._scan()  # 라이브러리 등록
+        phantom = os.path.join(self.tmp, "nonexistent-project", ".claude")  # 부모 미존재
+        rc, out, err = run(LIB, "--store", self.store, "--target", phantom, "--no-snapshot",
+                           "install", "agents", "a1", "--lib", self.lib)
+        self.assertNotEqual(rc, 0, "phantom 부모면 거부해야 함")
+        self.assertFalse(json.loads(out)["ok"])
+        self.assertFalse(os.path.exists(phantom), "거부 시 .claude 를 만들지 않아야 함")
+
+    def test_install_allows_existing_parent_target(self):
+        # 부모(프로젝트 폴더)가 존재하면 .claude 하위 생성은 정상 첫 설치로 허용.
+        self._scan()
+        proj = os.path.join(self.tmp, "real-project")
+        os.makedirs(proj)  # 부모 존재, .claude 는 아직 없음
+        tgt = os.path.join(proj, ".claude")
+        rc, out, err = run(LIB, "--store", self.store, "--target", tgt, "--no-snapshot",
+                           "install", "agents", "a1", "--lib", self.lib)
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(os.path.exists(os.path.join(tgt, "agents", "a1.md")))
+
     def test_env_declared_library(self):
         # CLAUDE_CONFIG_LIBRARIES: 등록 없이 env 만으로 스캔 대상이 되고(선언적),
         # env 에서 빠지면 목록에서도 빠진다(store 에 영속되지 않음).
@@ -612,6 +633,25 @@ class ClaudeConfigDump(unittest.TestCase):
                          f"dump 가 종료코드 {p.returncode} (cp949 회귀?): {p.stderr.decode('utf-8','replace')[-400:]}")
         data = json.loads(p.stdout.decode("utf-8"))
         self.assertIn("sections", data)
+
+    def test_projects_has_claude_flag(self):
+        # .claude.json projects -> {path,name,claude_dir,has_claude}. .claude 있는 것만 True.
+        tmp = tempfile.mkdtemp(prefix="proj_test_")
+        try:
+            pa = os.path.join(tmp, "projA"); os.makedirs(os.path.join(pa, ".claude"))
+            pb = os.path.join(tmp, "projB"); os.makedirs(pb)  # .claude 없음
+            cj = os.path.join(tmp, ".claude.json")
+            with open(cj, "w", encoding="utf-8") as f:
+                json.dump({"projects": {pa: {}, pb: {}}}, f)
+            p = subprocess.run([sys.executable, CFG, "projects", "--paths", f"claude_json={cj}"],
+                               capture_output=True, text=True, encoding="utf-8", timeout=60)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            by = {x["path"]: x for x in json.loads(p.stdout)}
+            self.assertTrue(by[pa]["has_claude"])
+            self.assertFalse(by[pb]["has_claude"])
+            self.assertEqual(by[pa]["claude_dir"], os.path.join(pa, ".claude"))
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":

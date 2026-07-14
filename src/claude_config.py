@@ -333,10 +333,31 @@ def make_html(state):
             .replace("__GENERATED__", html.escape(state["generated"]))
             .replace("__DATA__", json.dumps(state, ensure_ascii=False)))
 
+def list_projects(found):
+    """~/.claude.json 의 projects 맵을 {path, name, claude_dir, has_claude} 리스트로.
+    has_claude=True 는 <path>/.claude 가 실제 디렉토리로 존재(=경로 자체도 존재). UI 가
+    프로젝트 .claude 를 원클릭 track/설치 대상 후보로 쓴다(삭제/미존재 항목은 has_claude=False)."""
+    cj = found.get("claude_json")
+    out = []
+    if not (cj and os.path.exists(cj)):
+        return out
+    data = safe_load(cj)
+    if not isinstance(data, dict) or "__error__" in data:
+        return out
+    for path in (data.get("projects") or {}):
+        cdir = os.path.join(path, ".claude")
+        out.append({
+            "path": path,
+            "name": os.path.basename(path.rstrip("/\\")) or path,
+            "claude_dir": cdir,
+            "has_claude": os.path.isdir(cdir),
+        })
+    return out
+
 def main():
     ap = argparse.ArgumentParser(prog="claude_config", description="Claude 설정 introspection + 카드 HTML")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("discover", "dump", "report"):
+    for name in ("discover", "dump", "report", "projects"):
         sp = sub.add_parser(name)
         sp.add_argument("--paths", nargs="*", help="key=path 로 후보 직접 지정")
         if name == "report":
@@ -346,6 +367,8 @@ def main():
 
     if args.cmd == "discover":
         print(json.dumps(found, ensure_ascii=False, indent=2))
+    elif args.cmd == "projects":
+        print(json.dumps(list_projects(found), ensure_ascii=False, indent=2))
     elif args.cmd == "dump":
         print(json.dumps(parse(found), ensure_ascii=False, indent=2))
     elif args.cmd == "report":

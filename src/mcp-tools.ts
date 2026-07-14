@@ -99,6 +99,15 @@ export function buildTools(scriptDir: string): ToolDef[] {
       run: async (a: { path: string }) => jsonResult(await runPy("cas.py", ["untrack", "--json", a.path])),
     },
     {
+      name: "list_projects",
+      meta: {
+        title: "List Claude Code Projects",
+        description: ".claude.json 의 projects 를 {path, name, claude_dir, has_claude} 로 반환. UI 가 .claude 있는 프로젝트를 원클릭 track/설치 대상 후보로 사용",
+        inputSchema: z.object({}), annotations: READ,
+      },
+      run: async () => jsonResult(await runPy("claude_config.py", ["projects"])),
+    },
+    {
       name: "get_file_history",
       meta: {
         title: "Get File History",
@@ -344,11 +353,16 @@ export function buildTools(scriptDir: string): ToolDef[] {
       meta: {
         title: "Scan Personal Library",
         description: "라이브러리(.claude 구조, CLAUDE_CONFIG_LIBRARIES env 또는 등록분)의 agents/skills/commands 를 열거하고 라이브 설정과 해시 비교해 3상태(not_installed/installed/modified) 반환. lib 지정 시 신규 등록 후 스캔",
-        inputSchema: z.object({ lib: z.string().optional().describe("라이브러리 루트 경로(.claude 구조 디렉토리). 최초 1회 등록용") }),
+        inputSchema: z.object({
+          lib: z.string().optional().describe("라이브러리 루트 경로(.claude 구조 디렉토리). 최초 1회 등록용"),
+          targetDir: z.string().optional().describe("설치/비교 대상 .claude 루트(기본 ~/.claude). 프로젝트-로컬 스캔 시 지정"),
+        }),
         annotations: READ,
       },
-      run: async (a: { lib?: string }) => {
-        const args = ["scan"];
+      run: async (a: { lib?: string; targetDir?: string }) => {
+        const args: string[] = [];
+        if (a.targetDir) args.push("--target", a.targetDir);
+        args.push("scan");
         if (a.lib) args.push("--lib", a.lib);
         return jsonResult(await runPy("library.py", args));
       },
@@ -357,15 +371,18 @@ export function buildTools(scriptDir: string): ToolDef[] {
       name: "library_install",
       meta: {
         title: "Install Library Item",
-        description: "라이브러리 항목을 ~/.claude 에 설치/동기화. skills 는 그룹 중첩(가변 깊이) 가능하며 leaf 이름으로 평탄 설치(예: path=2-stack/java-spring/error-handling -> ~/.claude/skills/error-handling). 기존 항목 존재 시 스냅샷+.bak(파일)/.trash(디렉토리) 후 덮어씀",
+        description: "라이브러리 항목을 대상 .claude(기본 ~/.claude, targetDir 로 프로젝트-로컬 지정)에 설치/동기화. skills 는 그룹 중첩(가변 깊이) 가능하며 leaf 이름으로 평탄 설치(예: path=2-stack/java-spring/error-handling -> <target>/skills/error-handling). 기존 항목 존재 시 스냅샷+.bak(파일)/.trash(디렉토리) 후 덮어씀. targetDir 의 부모 디렉토리가 없으면 거부(phantom 방지)",
         inputSchema: z.object({
           category: z.enum(["agents", "skills", "commands"]),
           path: z.string().describe("카테고리 루트 기준 상대경로. skills 는 그룹 포함 가능, agents/commands 는 이름"),
           lib: z.string().optional(),
+          targetDir: z.string().optional().describe("설치 대상 .claude 루트(기본 ~/.claude). 프로젝트-로컬 설치 시 지정"),
         }), annotations: EDIT,
       },
-      run: async (a: { category: string; path: string; lib?: string }) => {
-        const args = ["install", a.category, a.path];
+      run: async (a: { category: string; path: string; lib?: string; targetDir?: string }) => {
+        const args: string[] = [];
+        if (a.targetDir) args.push("--target", a.targetDir);
+        args.push("install", a.category, a.path);
         if (a.lib) args.push("--lib", a.lib);
         return jsonResult(await runPy("library.py", args));
       },
@@ -374,14 +391,19 @@ export function buildTools(scriptDir: string): ToolDef[] {
       name: "library_uninstall",
       meta: {
         title: "Uninstall Library Item",
-        description: "~/.claude 의 해당 항목을 .trash 로 이동(복구 가능). 라이브러리 원본은 건드리지 않음",
+        description: "대상 .claude(기본 ~/.claude, targetDir 로 프로젝트-로컬 지정)의 해당 항목을 .trash 로 이동(복구 가능). 라이브러리 원본은 건드리지 않음",
         inputSchema: z.object({
           category: z.enum(["agents", "skills", "commands"]),
           name: z.string(),
+          targetDir: z.string().optional().describe("제거 대상 .claude 루트(기본 ~/.claude)"),
         }), annotations: EDIT,
       },
-      run: async (a: { category: string; name: string }) =>
-        jsonResult(await runPy("library.py", ["uninstall", a.category, a.name])),
+      run: async (a: { category: string; name: string; targetDir?: string }) => {
+        const args: string[] = [];
+        if (a.targetDir) args.push("--target", a.targetDir);
+        args.push("uninstall", a.category, a.name);
+        return jsonResult(await runPy("library.py", args));
+      },
     },
     {
       name: "library_unregister",

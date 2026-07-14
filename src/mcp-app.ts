@@ -32,6 +32,7 @@ const I18N: Record<string, Record<string, string>> = {
     kindGlobal: "전역", kindProject: "프로젝트",
     trackPathPlaceholder: "프로젝트 폴더 / .claude / 설정 파일 경로",
     trackAdd: "추적 추가", trackNone: "추적할 설정 파일을 찾지 못함", trackAlready: "이미 추적 중",
+    projPickOpen: "＋ 프로젝트에서 추가", projPickEmpty: ".claude 있는 프로젝트 없음", projPickTracked: "추적 중",
     untrack: "추적 해제", untracked: "추적 해제됨", untrackConfirm: "해제확정",
     settings: "설정", settingsHint: "8 카테고리 · 출처 경로 포함",
     source: "출처", remove: "제거", del: "삭제", cancel: "취소", add: "추가",
@@ -53,6 +54,7 @@ const I18N: Record<string, Record<string, string>> = {
     addNamePlaceholder: "name 설명…", needServerJson: "서버 JSON 필요: name {…}",
     libSectionTitle: "Library (토글 설치)", libNotInstalled: "미설치", libInstalled: "설치됨", libModified: "변경됨",
     libEmpty: "라이브러리 항목 없음", kitRef: "kit참조", done: "완료",
+    libTarget: "설치 대상", libTargetGlobal: "전역 (~/.claude)", libTargetPlaceholder: "프로젝트 경로 추가 (…/project 또는 …/.claude)",
     libInstall: "설치", libSync: "동기화", libSyncConfirm: "덮어쓰기 확정(백업됨)", libUninstallConfirm: "제거 확정(.trash)",
     libUnregistered: "미등록", libPathPlaceholder: "라이브러리 경로 (.claude 구조 디렉토리)", libRegister: "등록", libRegistered: "라이브러리 등록됨",
     curFileTitle: "현재 파일 내용", readOnly: "읽기 전용", emptyFile: "(빈 파일)", diffFetchFail: "diff 조회 실패",
@@ -76,6 +78,7 @@ const I18N: Record<string, Record<string, string>> = {
     kindGlobal: "Global", kindProject: "Project",
     trackPathPlaceholder: "Project folder / .claude / config file path",
     trackAdd: "Track", trackNone: "No config files found to track", trackAlready: "Already tracked",
+    projPickOpen: "＋ Add from projects", projPickEmpty: "No projects with .claude", projPickTracked: "tracked",
     untrack: "Untrack", untracked: "Untracked", untrackConfirm: "Confirm",
     settings: "Settings", settingsHint: "8 categories · with source paths",
     source: "Source", remove: "Remove", del: "Delete", cancel: "Cancel", add: "Add",
@@ -97,6 +100,7 @@ const I18N: Record<string, Record<string, string>> = {
     addNamePlaceholder: "name description…", needServerJson: "Server JSON required: name {…}",
     libSectionTitle: "Library (toggle install)", libNotInstalled: "Not installed", libInstalled: "Installed", libModified: "Modified",
     libEmpty: "No library items", kitRef: "kit ref", done: "done",
+    libTarget: "Install target", libTargetGlobal: "Global (~/.claude)", libTargetPlaceholder: "Add project path (…/project or …/.claude)",
     libInstall: "Install", libSync: "Sync", libSyncConfirm: "Confirm overwrite (backed up)", libUninstallConfirm: "Confirm remove (.trash)",
     libUnregistered: "Unregistered", libPathPlaceholder: "Library path (.claude-structured directory)", libRegister: "Register", libRegistered: "Library registered",
     curFileTitle: "Current file content", readOnly: "Read-only", emptyFile: "(empty file)", diffFetchFail: "diff fetch failed",
@@ -218,10 +222,55 @@ function buildUntrackBtn(p: string): HTMLElement {
   return b;
 }
 
+// 프로젝트에서 추가: .claude.json 의 projects 중 .claude 있는 것을 원클릭 track(config_track).
+// 지연 로드(펼칠 때 list_projects 호출). 이미 추적 중인 프로젝트는 비활성 표시.
+function buildProjectPicker(): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "projpick";
+  const toggle = document.createElement("button");
+  toggle.className = "projpicktoggle";
+  toggle.textContent = t("projPickOpen");
+  const list = document.createElement("div");
+  list.className = "projpicklist";
+  list.hidden = true;
+  let loaded = false;
+  toggle.addEventListener("click", async () => {
+    list.hidden = !list.hidden;
+    if (list.hidden || loaded) return;
+    loaded = true;
+    list.innerHTML = `<div class="empty">${esc(t("loading"))}</div>`;
+    try {
+      const res = jparse(await callTool("list_projects"));
+      const projs = (Array.isArray(res) ? res : []).filter((p: any) => p.has_claude);
+      // 이미 추적 중(라이브러리 후보 = 추적된 프로젝트 .claude dir)인지 비교.
+      const trackedNorm = new Set(libTargetCandidates.map((c) => c.replace(/\\/g, "/").toLowerCase()));
+      list.innerHTML = "";
+      if (!projs.length) { list.innerHTML = `<div class="empty">${esc(t("projPickEmpty"))}</div>`; return; }
+      for (const p of projs) {
+        const already = trackedNorm.has(String(p.claude_dir).replace(/\\/g, "/").toLowerCase());
+        const row = document.createElement("button");
+        row.className = "projpickrow" + (already ? " tracked" : "");
+        row.disabled = already;
+        row.innerHTML =
+          `<span class="pnm">${esc(p.name)}</span><span class="ppath">${esc(p.claude_dir)}</span>` +
+          (already ? `<span class="ptag">${esc(t("projPickTracked"))}</span>` : "");
+        if (!already) row.addEventListener("click", async () => {
+          try { await callTool("config_track", { path: p.claude_dir }); flashToast(`${t("trackAdd")} · ${p.name}`); await refresh(); }
+          catch (e) { flashToast(t("failed")); console.error("[config-monitor] project track", e); }
+        });
+        list.appendChild(row);
+      }
+    } catch (e) { list.innerHTML = `<div class="empty">${esc(t("failed"))}</div>`; console.error("[config-monitor] list_projects", e); }
+  });
+  wrap.append(toggle, list);
+  return wrap;
+}
+
 function renderTracked(status: any): number {
   const host = $("tracked");
   host.innerHTML = "";
   host.appendChild(buildTrackAdder());
+  host.appendChild(buildProjectPicker());
   // status.defaults = 전역(기본 추적) 대상 경로 목록 -> 전역(editable) vs 프로젝트(view-only) 구분.
   const defaults = new Set<string>(Array.isArray(status.defaults) ? status.defaults : []);
   const list = document.createElement("div");
@@ -255,6 +304,14 @@ function renderTracked(status: any): number {
     list.appendChild(row);
   }
   host.appendChild(list);
+  // 라이브러리 로컬 설치 타깃 후보: 프로젝트(비-전역) 추적 항목에서 .claude 디렉토리 유도(중복 제거).
+  const cand = new Set<string>();
+  for (const [pp] of rows) {
+    if (defaults.has(pp)) continue;
+    const d = dirname(pp);
+    if (d.replace(/\\/g, "/").toLowerCase().endsWith("/.claude")) cand.add(d);
+  }
+  libTargetCandidates = [...cand];
   return rows.length;
 }
 
@@ -516,8 +573,8 @@ function mkItemActions(it: any): HTMLElement {
     });
     return b;
   };
-  const doInstall = () => callTool("library_install", { category: it.category, path: it.relpath, lib: it.lib });
-  const doRemove = () => callTool("library_uninstall", { category: it.category, name: it.name });
+  const doInstall = () => callTool("library_install", { category: it.category, path: it.relpath, lib: it.lib, targetDir: libTarget || undefined });
+  const doRemove = () => callTool("library_uninstall", { category: it.category, name: it.name, targetDir: libTarget || undefined });
   if (it.status === "not_installed") act.appendChild(mk(t("libInstall"), doInstall));
   if (it.status === "modified") act.appendChild(mk(t("libSync"), doInstall, t("libSyncConfirm")));
   if (it.status !== "not_installed") act.appendChild(mk(t("remove"), doRemove, t("libUninstallConfirm")));
@@ -531,7 +588,7 @@ async function installMany(items: any[]): Promise<void> {
   let ok = 0, fail = 0;
   for (const it of items) {
     try {
-      const r = jparse(await callTool("library_install", { category: it.category, path: it.relpath, lib: it.lib }));
+      const r = jparse(await callTool("library_install", { category: it.category, path: it.relpath, lib: it.lib, targetDir: libTarget || undefined }));
       if (r && r.ok === false) fail++; else ok++;
     } catch { fail++; }
   }
@@ -641,6 +698,56 @@ function renderSkillTree(skills: any[]): HTMLElement {
   return wrap;
 }
 
+// 라이브러리 설치 대상: "" = 전역(~/.claude), 아니면 프로젝트 .claude 디렉토리.
+let libTarget = "";
+// 프로젝트 .claude 후보(추적 목록에서 유도). renderTracked 가 채운다.
+let libTargetCandidates: string[] = [];
+
+// 설치 대상 선택기: 전역(기본) + 추적된 프로젝트 .claude 후보 + 수동 경로 입력.
+// 대상 변경 시 그 target 으로 재스캔(refresh) -> installed/modified 상태가 대상 기준으로 갱신.
+function buildLibTargetSelector(): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "libtarget";
+  wrap.style.gridColumn = "1 / -1";
+  const lbl = document.createElement("span");
+  lbl.className = "dlabel";
+  lbl.textContent = t("libTarget");
+
+  const sel = document.createElement("select");
+  sel.className = "libtargetsel";
+  const opt0 = document.createElement("option");
+  opt0.value = "";
+  opt0.textContent = t("libTargetGlobal");
+  sel.appendChild(opt0);
+  const cands = [...libTargetCandidates];
+  if (libTarget && !cands.includes(libTarget)) cands.push(libTarget); // 수동 입력분도 옵션에
+  for (const c of cands) {
+    const o = document.createElement("option");
+    o.value = c;
+    o.textContent = c;
+    sel.appendChild(o);
+  }
+  sel.value = libTarget;
+  sel.addEventListener("change", async () => { libTarget = sel.value; await refresh(); });
+
+  const input = document.createElement("input");
+  input.className = "libtargetinput";
+  input.placeholder = t("libTargetPlaceholder");
+  const applyManual = async () => {
+    const v = input.value.trim();
+    if (!v) return;
+    // 프로젝트 루트를 주면 그 .claude 를 대상으로(끝이 .claude 가 아니면 붙임).
+    const norm = v.replace(/[\\/]+$/, "");
+    libTarget = norm.replace(/\\/g, "/").toLowerCase().endsWith("/.claude") ? norm : norm + "/.claude";
+    input.value = "";
+    await refresh();
+  };
+  input.addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") applyManual(); });
+
+  wrap.append(lbl, sel, input);
+  return wrap;
+}
+
 function renderLibrary(host: HTMLElement, res: any): void {
   const secEl = document.createElement("div");
   secEl.className = "sec" + (collapsed.has("Library") ? " collapsed" : "");
@@ -668,7 +775,13 @@ function renderLibrary(host: HTMLElement, res: any): void {
 
   const body = document.createElement("div");
   body.className = "secbody";
-  if (!items.length) body.innerHTML = `<div class="empty">${esc(t("libEmpty"))}</div>`;
+  body.appendChild(buildLibTargetSelector());   // 설치 대상(전역/프로젝트) 선택기
+  if (!items.length) {
+    const em = document.createElement("div");
+    em.className = "empty";
+    em.textContent = t("libEmpty");
+    body.appendChild(em);
+  }
   // agents/commands 는 평면 카드, skills 는 가변 깊이 트리(체크박스 선택 설치).
   for (const it of items.filter((x) => x.category !== "skills")) {
     const [label, cls] = libStatus(it.status);
@@ -744,7 +857,7 @@ function renderLibrary(host: HTMLElement, res: any): void {
 async function refreshLibrary(): Promise<void> {
   const host = $("config");
   try {
-    const res = jparse(await callTool("library_scan"));
+    const res = jparse(await callTool("library_scan", libTarget ? { targetDir: libTarget } : {}));
     // 라이브러리 미설정(빈 목록)은 정상 상태 — 섹션 대신 등록 UI 로 진행
     if (res && res.ok !== false && (res.libraries || []).length) { renderLibrary(host, res); return; }
   } catch { /* 오류 -> 등록 UI */ }
