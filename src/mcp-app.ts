@@ -241,7 +241,7 @@ function buildProjectPicker(): HTMLElement {
     list.innerHTML = `<div class="empty">${esc(t("loading"))}</div>`;
     try {
       const res = jparse(await callTool("list_projects"));
-      const projs = (Array.isArray(res) ? res : []).filter((p: any) => p.has_claude);
+      const projs = (res && Array.isArray(res.projects) ? res.projects : []).filter((p: any) => p.has_claude);
       // 이미 추적 중(라이브러리 후보 = 추적된 프로젝트 .claude dir)인지 비교.
       const trackedNorm = new Set(libTargetCandidates.map((c) => c.replace(/\\/g, "/").toLowerCase()));
       list.innerHTML = "";
@@ -286,6 +286,7 @@ function renderTracked(status: any): number {
     const global = defaults.has(p);
     const row = document.createElement("div");
     row.className = "file" + (p === selectedPath ? " sel" : "");
+    row.dataset.path = p;   // 선택 강조를 full path 로 매칭(같은 basename 파일 오강조 방지)
     row.innerHTML =
       `<span class="fbadge ${st}">${esc(statusLabel(st))}</span>` +
       `<span class="kind ${global ? "kglobal" : "kproject"}">${esc(global ? t("kindGlobal") : t("kindProject"))}</span>` +
@@ -896,10 +897,10 @@ async function selectFile(p: string): Promise<void> {
   body.innerHTML = `<div class="empty">${esc(t("loading"))}</div>`;
   const h = jparseLast(await callTool("get_file_history", { path: p }));
   currentRevs = (h && h.revisions) || [];
-  // 선택 행 다시 표시(refresh 없이 강조만)
-  document.querySelectorAll(".file").forEach((el) => {
-    const fn = el.querySelector(".fname")?.textContent || "";
-    if (fn === basename(p)) el.classList.add("sel");
+  // 선택 행 다시 표시(refresh 없이 강조만). full path 로 매칭(같은 basename, 예: 여러 settings.json
+  // 파일이 함께 강조되는 버그 방지).
+  document.querySelectorAll<HTMLElement>(".file").forEach((el) => {
+    if (el.dataset.path === p) el.classList.add("sel");
   });
   if (!currentRevs.length) {
     body.innerHTML = `<div class="empty">${esc(t("noHistory"))}</div>`;

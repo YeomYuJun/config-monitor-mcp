@@ -368,7 +368,8 @@ def main():
     if args.cmd == "discover":
         print(json.dumps(found, ensure_ascii=False, indent=2))
     elif args.cmd == "projects":
-        print(json.dumps(list_projects(found), ensure_ascii=False, indent=2))
+        # MCP structuredContent 는 객체여야 함(배열 금지) -> {projects:[...]} 로 감쌈.
+        print(json.dumps({"projects": list_projects(found)}, ensure_ascii=False, indent=2))
     elif args.cmd == "dump":
         print(json.dumps(parse(found), ensure_ascii=False, indent=2))
     elif args.cmd == "report":

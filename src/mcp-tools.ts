@@ -102,7 +102,7 @@ export function buildTools(scriptDir: string): ToolDef[] {
       name: "list_projects",
       meta: {
         title: "List Claude Code Projects",
-        description: ".claude.json 의 projects 를 {path, name, claude_dir, has_claude} 로 반환. UI 가 .claude 있는 프로젝트를 원클릭 track/설치 대상 후보로 사용",
+        description: ".claude.json 의 projects 를 {projects:[{path, name, claude_dir, has_claude}]} 로 반환. UI 가 .claude 있는 프로젝트를 원클릭 track/설치 대상 후보로 사용",
         inputSchema: z.object({}), annotations: READ,
       },
       run: async () => jsonResult(await runPy("claude_config.py", ["projects"])),

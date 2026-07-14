@@ -646,7 +646,7 @@ class ClaudeConfigDump(unittest.TestCase):
             p = subprocess.run([sys.executable, CFG, "projects", "--paths", f"claude_json={cj}"],
                                capture_output=True, text=True, encoding="utf-8", timeout=60)
             self.assertEqual(p.returncode, 0, p.stderr)
-            by = {x["path"]: x for x in json.loads(p.stdout)}
+            by = {x["path"]: x for x in json.loads(p.stdout)["projects"]}
             self.assertTrue(by[pa]["has_claude"])
             self.assertFalse(by[pb]["has_claude"])
             self.assertEqual(by[pa]["claude_dir"], os.path.join(pa, ".claude"))
