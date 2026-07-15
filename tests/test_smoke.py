@@ -522,6 +522,19 @@ class TrackProjectPreset(unittest.TestCase):
         added = {self._nc(x) for x in json.loads(out)["added"]}
         self.assertEqual(added, {self._nc(s), self._nc(sl)})
 
+    def test_track_project_dir_expands_prose_preset(self):
+        # CLAUDE.md 는 산문이라 카드가 아니라 추적 대상. 루트와 .claude 양쪽 모두 잡아야 한다
+        # (PROJECT_PRESET 은 .claude 기준이라 루트의 CLAUDE.md 를 놓치기 쉬움).
+        proj = os.path.join(self.tmp, "repoP")
+        s = self._make(os.path.join(proj, ".claude", "settings.json"))
+        md = self._make(os.path.join(proj, "CLAUDE.md"), "# rules")
+        lmd = self._make(os.path.join(proj, "CLAUDE.local.md"), "# local")
+        cmd = self._make(os.path.join(proj, ".claude", "CLAUDE.md"), "# in-claude")
+        rc, out, err = self.cas("track", "--json", proj)
+        self.assertEqual(rc, 0, err)
+        added = {self._nc(x) for x in json.loads(out)["added"]}
+        self.assertEqual(added, {self._nc(s), self._nc(md), self._nc(lmd), self._nc(cmd)})
+
     def test_track_claude_dir_directly(self):
         # .claude 디렉토리를 직접 주면 그 안의 프리셋을 추적(settings.local 없으면 settings 만).
         cdir = os.path.join(self.tmp, "repoB", ".claude")
@@ -690,6 +703,94 @@ class ClaudeConfigDump(unittest.TestCase):
             self.assertTrue(by[pa]["has_claude"])
             self.assertFalse(by[pb]["has_claude"])
             self.assertEqual(by[pa]["claude_dir"], os.path.join(pa, ".claude"))
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_agents_scanned_recursively(self):
+        # Claude 는 하위 폴더의 에이전트까지 읽는다. 한 단계만 보면 있는 것을 없다고 표시함.
+        # 동시에 .trash(삭제 보관분)는 어느 깊이에서도 살아있는 항목으로 나오면 안 되고,
+        # 중첩 항목은 제거 op 가 단일 세그먼트 이름만 받으므로 편집 미부여여야 한다.
+        tmp = tempfile.mkdtemp(prefix="agents_test_")
+        try:
+            ad = os.path.join(tmp, "agents")
+            os.makedirs(os.path.join(ad, "review"))
+            os.makedirs(os.path.join(ad, ".trash"))
+            for rel, nm in (("top.md", "top-agent"),
+                            (os.path.join("review", "security.md"), "sec-review"),
+                            (os.path.join(".trash", "deleted.md"), "trashed-agent")):
+                with open(os.path.join(ad, rel), "w", encoding="utf-8") as f:
+                    f.write(f"---\nname: {nm}\ndescription: d\n---\n")
+            p = subprocess.run([sys.executable, CFG, "dump", "--paths", f"agents_dir={ad}"],
+                               capture_output=True, text=True, encoding="utf-8", timeout=60)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            sec = next(s for s in json.loads(p.stdout)["sections"] if s["title"].startswith("Agents"))
+            by = {c["name"]: c for c in sec["cards"]}
+            self.assertIn("sec-review", by, "하위 폴더 에이전트가 안 보임(재귀 회귀)")
+            self.assertIn("top-agent", by)
+            self.assertNotIn("trashed-agent", by, ".trash 항목이 살아있는 카드로 노출됨")
+            self.assertIsNone(by["sec-review"].get("edit"), "중첩 항목에 편집이 붙음(제거 op 가 못 받는 이름)")
+            self.assertEqual((by["top-agent"].get("edit") or {}).get("name"), "top")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_project_commands_and_mcp_json(self):
+        # commands 는 하위 폴더가 네임스페이스(재귀), .mcp.json 은 프로젝트 스코프 MCP.
+        # 둘 다 제거 op 가 없어 뷰 전용이어야 하고, env 는 값 없이 키 이름만 나가야 한다.
+        tmp = tempfile.mkdtemp(prefix="t2_test_")
+        try:
+            cdir = os.path.join(tmp, ".claude")
+            os.makedirs(os.path.join(cdir, "commands", "frontend"))
+            os.makedirs(os.path.join(cdir, "commands", ".trash"))
+            for rel in ("deploy.md", os.path.join("frontend", "component.md"),
+                        os.path.join(".trash", "old.md")):
+                with open(os.path.join(cdir, "commands", rel), "w", encoding="utf-8") as f:
+                    f.write("---\ndescription: d\n---\n")
+            with open(os.path.join(tmp, ".mcp.json"), "w", encoding="utf-8") as f:
+                json.dump({"mcpServers": {"team-db": {"command": "npx",
+                                                      "env": {"DB_TOKEN": "SECRET_VALUE"}}}}, f)
+            p = subprocess.run([sys.executable, CFG, "dump", "--projects", cdir],
+                               capture_output=True, text=True, encoding="utf-8", timeout=60)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            self.assertNotIn("SECRET_VALUE", p.stdout, "env 값이 dump 로 샘")
+            data = json.loads(p.stdout)
+            cmds = next(s for s in data["sections"] if s["title"].startswith("Commands"))
+            names = {c["name"] for c in cmds["cards"]}
+            self.assertIn("frontend/component", names, "네임스페이스 커맨드가 안 보임(재귀 회귀)")
+            self.assertIn("deploy", names)
+            self.assertNotIn(".trash/old", names)
+            self.assertTrue(all(c.get("edit") is None for c in cmds["cards"]), "commands 는 제거 op 가 없음")
+            mcp = next(s for s in data["sections"] if s["title"].startswith("MCP Servers (project)"))
+            self.assertEqual([c["name"] for c in mcp["cards"]], ["team-db"])
+            self.assertEqual(dict(mcp["cards"][0]["kv"])["env"], "DB_TOKEN")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_settings_local_merged_as_separate_source(self):
+        # settings.local.json 은 settings.json 과 함께 적용된다(local 우선). first_existing 으로
+        # 하나만 읽으면 실제 적용 중인 규칙이 안 보인다. 두 파일이 각각 출처로 나오고,
+        # 각 카드의 편집 대상(edit.settings)이 자기 파일이어야 한다(엉뚱한 파일 편집 방지).
+        tmp = tempfile.mkdtemp(prefix="settings_test_")
+        try:
+            base = os.path.join(tmp, "settings.json")
+            local = os.path.join(tmp, "settings.local.json")
+            with open(base, "w", encoding="utf-8") as f:
+                json.dump({"permissions": {"allow": ["Bash(ls:*)"]}}, f)
+            with open(local, "w", encoding="utf-8") as f:
+                json.dump({"permissions": {"allow": ["Bash(git:*)", "Read(*)"]}}, f)
+            p = subprocess.run([sys.executable, CFG, "dump", "--paths", f"code_settings={base}"],
+                               capture_output=True, text=True, encoding="utf-8", timeout=60)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            sec = next(s for s in json.loads(p.stdout)["sections"]
+                       if s["title"].startswith("Permissions"))
+            allows = [c for c in sec["cards"] if c["name"] == "allow"]
+            by_src = {c["source"]: c for c in allows}
+            self.assertIn(local, by_src, "settings.local.json 이 안 보임(적용되는데 미표시)")
+            self.assertIn(base, by_src)
+            self.assertEqual(by_src[local]["edit"]["items"], ["Bash(git:*)", "Read(*)"])
+            self.assertEqual(by_src[base]["edit"]["items"], ["Bash(ls:*)"])
+            # 편집이 자기 파일로 가는지: local 카드가 settings.json 을 건드리면 안 된다.
+            for f_path, c in by_src.items():
+                self.assertEqual(c["edit"]["settings"], f_path)
         finally:
             import shutil; shutil.rmtree(tmp, ignore_errors=True)
 

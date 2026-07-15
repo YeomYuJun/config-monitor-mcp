@@ -415,12 +415,10 @@ function renderConfigCard(c: any, shadowOf: ((c: any) => Shadow | null) | null):
 }
 
 // 출처 그룹 헤더(카드 그리드 full-width 행). 클릭 시 그룹 접기/펼치기(로컬 srcOpen) 후 재렌더.
-function buildSrcGroupHeader(sec: any, isGlobal: boolean, project: string, count: number): HTMLElement {
-  const key = `${sec.title}::${isGlobal ? "g" : project}`;
+function buildSrcGroupHeader(key: string, isGlobal: boolean, pathTxt: string, count: number): HTMLElement {
   const open = (key in srcOpen) ? srcOpen[key] : isGlobal;   // 기본: 전역 열림, 프로젝트 접힘
   const head = document.createElement("div");
   head.className = "srcgrp" + (open ? "" : " collapsed");
-  const pathTxt = isGlobal ? (sec.source || "") : project;
   head.innerHTML =
     `<span class="chev2">▾</span>` +
     `<span class="scopepill ${isGlobal ? "global" : "project"}">${esc(isGlobal ? t("kindGlobal") : t("kindProject"))}</span>` +
@@ -494,28 +492,36 @@ function renderConfigSection(host: HTMLElement, sec: any): void {
     };
   }
 
-  if (scopeFilter === "all" && hasProject) {
-    // 그룹 모드: 전역 그룹 + 프로젝트 그룹들(등장 순). 접힌 그룹은 카드 렌더 스킵(DOM 제외).
-    const globalCards = cards.filter((c: any) => c.scope !== "project");
-    const gKey = `${sec.title}::g`;
-    body.appendChild(buildSrcGroupHeader(sec, true, "", globalCards.length));
-    if ((gKey in srcOpen) ? srcOpen[gKey] : true) {
-      for (const c of globalCards) body.appendChild(renderConfigCard(c, shadowOf));
+  // 출처 그룹 키: perm/hook 은 카드마다 실제 settings 파일(claude_config 가 source 로 붙임),
+  // 그 외는 전역=섹션 출처 / 프로젝트=프로젝트 경로. 전역이라도 settings.json 과
+  // settings.local.json 은 둘 다 적용되므로 같은 이름의 카드(allow 등)가 각각 나온다 -> 별도 그룹.
+  const srcOf = (c: any) => c.source || (c.scope === "project" ? c.project : (sec.source || ""));
+  const groups: { key: string; label: string; isGlobal: boolean; cards: any[] }[] = [];
+  const gidx = new Map<string, number>();
+  for (const c of cards) {
+    const isGlobal = c.scope !== "project";
+    const label = srcOf(c);
+    const key = `${sec.title}::${isGlobal ? "g" : "p"}::${label}`;
+    let i = gidx.get(key);
+    if (i === undefined) {
+      i = groups.length;
+      gidx.set(key, i);
+      groups.push({ key, label, isGlobal, cards: [] });
     }
-    const projGroups = new Map<string, any[]>();
-    for (const c of cards) if (c.scope === "project") {
-      const arr = projGroups.get(c.project) || [];
-      arr.push(c); projGroups.set(c.project, arr);
-    }
-    for (const [proj, pcards] of projGroups) {
-      const pKey = `${sec.title}::${proj}`;
-      body.appendChild(buildSrcGroupHeader(sec, false, proj, pcards.length));
-      if ((pKey in srcOpen) ? srcOpen[pKey] : false) {
-        for (const c of pcards) body.appendChild(renderConfigCard(c, shadowOf));
+    groups[i].cards.push(c);
+  }
+
+  // 출처가 둘 이상이면(프로젝트 있음 또는 전역 settings 2 파일) 그룹 모드.
+  if (scopeFilter === "all" && (hasProject || groups.length > 1)) {
+    // 그룹 모드: 출처별 그룹(등장 순 - 백엔드가 전역 카드를 앞에 둔다). 접힌 그룹은 카드 렌더 스킵(DOM 제외).
+    for (const g of groups) {
+      body.appendChild(buildSrcGroupHeader(g.key, g.isGlobal, g.label, g.cards.length));
+      if ((g.key in srcOpen) ? srcOpen[g.key] : g.isGlobal) {
+        for (const c of g.cards) body.appendChild(renderConfigCard(c, shadowOf));
       }
     }
   } else {
-    // 평면 모드(전체+프로젝트 없음, 또는 필터 모드): 그룹 헤더 없이 카드만.
+    // 평면 모드(출처 하나, 또는 필터 모드): 그룹 헤더 없이 카드만.
     if (!visible.length) body.innerHTML = `<div class="empty">${esc(t("emptyCards"))}</div>`;
     for (const c of visible) body.appendChild(renderConfigCard(c, shadowOf));
   }

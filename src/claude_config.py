@@ -3,7 +3,7 @@ r"""
 claude_config.py - Claude 설정 introspection + 카드 HTML 생성기 (v2, 7 카테고리)
 
 대상 경로:
-  ~\.claude.json                                  Claude Code 전역 (관심 키만 추출 + 마스킹)
+  ~\.claude.json                                  Claude Code 전역 (관심 키만 선별 추출)
   ~\.claude\settings.json                         permission allow/deny + hooks
   ~\.claude\skills\*                              Code 스킬
   ~\.claude\agents\*                              Code 에이전트
@@ -42,14 +42,13 @@ CANDIDATES = {
                          os.path.join(HOME, ".claude", "settings.local.json")],
     "skills_dir":      [os.path.join(HOME, ".claude", "skills")],
     "agents_dir":      [os.path.join(HOME, ".claude", "agents")],
+    "commands_dir":    [os.path.join(HOME, ".claude", "commands")],
     "scheduled_dir":   [os.path.join(HOME, "Claude", "Scheduled")],
     "desktop_config":  [os.path.join(DESKTOP_DIR, "claude_desktop_config.json")],
     "desktop_skill_manifest_glob":
                        [os.path.join(DESKTOP_DIR, "local-agent-mode-sessions",
                                      "skills-plugin", "**", "manifest.json")],
 }
-
-SENSITIVE_RE = re.compile(r"(token|secret|password|apikey|api_key|key|oauth|account|email|userid|uuid)", re.I)
 
 def first_existing(paths):
     for p in paths:
@@ -109,7 +108,7 @@ def _short(v, n=160):
 
 DESC_KEYS = {"desc", "description", "설명", "summary"}
 
-def card(name, kv, badge=None, ok=False, edit=None, scope=None, project=None):
+def card(name, kv, badge=None, ok=False, edit=None, scope=None, project=None, source=None):
     # 서술형 값은 넉넉히 담고(줄 수 표시는 UI 의 -webkit-line-clamp 가 담당),
     # 코드형/경로 값만 160자 선절단 — 슬라이더(2~10줄) 전 구간이 실제 텍스트로 채워지게.
     c = {"name": name, "badge": badge, "ok": ok,
@@ -121,7 +120,32 @@ def card(name, kv, badge=None, ok=False, edit=None, scope=None, project=None):
         c["scope"] = scope
     if project:
         c["project"] = project
+    # source 는 한 섹션에 여러 파일이 섞이는 항목(perm/hook)에만 붙는다.
+    # 같은 이름의 카드(allow 등)가 파일마다 나오므로 카드 자신이 출처를 들고 있어야 한다.
+    if source:
+        c["source"] = source
     return c
+
+def _dir_settings(d):
+    """디렉토리 d 에서 실제로 적용되는 settings 파일들(존재하는 것만).
+    Claude 는 settings.json 과 settings.local.json 을 모두 읽고 local 이 우선한다.
+    first_existing 으로 하나만 보면 실제 적용 중인 규칙이 안 보인다."""
+    return [p for p in (os.path.join(d, "settings.json"), os.path.join(d, "settings.local.json"))
+            if os.path.exists(p)]
+
+def _settings_chain(cs):
+    """전역에서 적용되는 settings 파일들. 같은 디렉토리의 settings.json/settings.local.json 을
+    함께 본다. cs 가 그 둘 중 하나가 아니면(--paths 로 다른 파일을 직접 지정) 그 파일만."""
+    if not cs:
+        return []
+    files = _dir_settings(os.path.dirname(cs))
+    return files if cs in files else [cs]
+
+def _source_label(files):
+    """섹션 헤더용 출처 표기. 여러 파일이면 '(+N more)'(Desktop Skills 섹션과 동일 표기)."""
+    if not files:
+        return None
+    return f"{files[0]}  (+{len(files)-1} more)" if len(files) > 1 else files[0]
 
 # --- 섹션별 카드 빌더(전역/프로젝트 공용). scope=None 이면 전역,
 #     scope="project" 이면 프로젝트 항목으로 태깅. 프로젝트 skills/agents 는 편집 대상이
@@ -132,11 +156,12 @@ def _perm_cards(cs, scope=None, project=None):
         perms = (safe_load(cs) or {}).get("permissions", {})
         for kind in ("allow", "deny", "ask"):
             lst = perms.get(kind, []) or []
-            edit = {"kind": "perm", "permKind": kind, "items": list(lst)}
-            if scope == "project":
-                edit["settings"] = cs
-            cards.append(card(kind, [], badge=str(len(lst)), ok=(kind == "allow"),
-                              edit=edit, scope=scope, project=project))
+            # settings 는 항상 지정 - 같은 이름의 카드가 파일마다 나오므로 편집이 그 카드의 파일로 가야 한다.
+            # (전역 settings.json 이면 config_edit 의 기본 대상과 같은 경로라 동작 변화 없음.)
+            edit = {"kind": "perm", "permKind": kind, "items": list(lst), "settings": cs}
+            cards.append(card(kind, [("source", os.path.basename(cs))],
+                              badge=str(len(lst)), ok=(kind == "allow"),
+                              edit=edit, scope=scope, project=project, source=cs))
     return cards
 
 def _hook_cards(cs, scope=None, project=None):
@@ -146,11 +171,10 @@ def _hook_cards(cs, scope=None, project=None):
         for event, entries in hooks.items():
             cmds = [hk.get("command", "") for ent in (entries or [])
                     for hk in (ent.get("hooks", []) or [])]
-            edit = {"kind": "hook", "event": event, "items": cmds}
-            if scope == "project":
-                edit["settings"] = cs
-            cards.append(card(event, [("matchers", len(entries or []))], badge="hook",
-                              edit=edit, scope=scope, project=project))
+            edit = {"kind": "hook", "event": event, "items": cmds, "settings": cs}
+            cards.append(card(event, [("matchers", len(entries or [])),
+                                      ("source", os.path.basename(cs))], badge="hook",
+                              edit=edit, scope=scope, project=project, source=cs))
     return cards
 
 def _skill_cards(sd, scope=None, project=None):
@@ -172,22 +196,108 @@ def _skill_cards(sd, scope=None, project=None):
                               badge="add", edit={"kind": "skill-add"}))
     return cards
 
+def _iter_agents(ad):
+    """agents/ 를 재귀 순회해 (rel, md, disp, top) 목록을 만든다.
+    Claude 는 하위 폴더의 에이전트까지 읽으므로 한 단계만 보면 실제로 있는 것을 없다고 표시하게 된다.
+      rel  = 표시용 상대 이름(구분자 '/', 확장자 제거)
+      md   = frontmatter 를 읽을 파일
+      disp = 카드에 보일 경로(파일형은 md 자신, AGENT.md 디렉토리형은 그 디렉토리)
+      top  = 편집 가능한 단일 세그먼트 이름. 중첩 항목은 None(제거 op 가 못 받음 -> 뷰 전용).
+    dot 디렉토리(.trash 등)는 모든 깊이에서 제외 - 삭제 보관분이 살아있는 항목으로 되살아나면 안 된다."""
+    items = []
+
+    def walk(d, prefix):
+        try:
+            names = sorted(os.listdir(d))
+        except OSError:
+            return
+        for name in names:
+            if name.startswith("."):
+                continue
+            full = os.path.join(d, name)
+            if os.path.isdir(full):
+                agent_md = os.path.join(full, "AGENT.md")
+                if os.path.exists(agent_md):
+                    # 디렉토리 자체가 에이전트 한 개(AGENT.md 형): 내부는 리소스이므로 더 내려가지 않는다.
+                    items.append((prefix + name, agent_md, full, name if not prefix else None))
+                else:
+                    walk(full, prefix + name + "/")
+            elif name.endswith(".md"):
+                stem = name[:-3]
+                items.append((prefix + stem, full, full, stem if not prefix else None))
+
+    walk(ad, "")
+    return items
+
+def _iter_md(d):
+    """디렉토리 d 를 재귀 순회해 (rel, path) 목록. rel 은 구분자 '/', 확장자 제거.
+    commands 는 하위 폴더가 네임스페이스가 되므로 한 단계만 보면 있는 것을 없다고 표시하게 된다.
+    dot 디렉토리(.trash 등)는 모든 깊이에서 제외."""
+    items = []
+
+    def walk(cur, prefix):
+        try:
+            names = sorted(os.listdir(cur))
+        except OSError:
+            return
+        for name in names:
+            if name.startswith("."):
+                continue
+            full = os.path.join(cur, name)
+            if os.path.isdir(full):
+                walk(full, prefix + name + "/")
+            elif name.endswith(".md"):
+                items.append((prefix + name[:-3], full))
+
+    walk(d, "")
+    return items
+
+def _command_cards(cd, scope=None, project=None):
+    """commands/ 의 *.md(슬래시 커맨드). config_edit 에 제거 op 가 없으므로 뷰 전용."""
+    cards = []
+    if cd and os.path.isdir(cd):
+        for rel, full in _iter_md(cd):
+            meta = read_frontmatter(full)
+            cards.append(card(rel, [
+                ("desc", meta.get("description", "-")),
+                ("path", full),
+            ], badge="command", ok=True, scope=scope, project=project))
+    return cards
+
+def _mcp_json_cards(root, scope=None, project=None):
+    """<root>/.mcp.json 의 mcpServers. MCP Project 스코프 - 커밋되어 팀 전체에 영향인데
+    대시보드에 존재 자체가 없었다. 편집 op 가 없으므로 뷰 전용.
+    env 는 값 없이 키 이름만(Desktop MCP 카드와 동일)."""
+    cards = []
+    mj = os.path.join(root, ".mcp.json")
+    if os.path.exists(mj):
+        data = safe_load(mj)
+        if "__error__" in data:
+            cards.append(card("(파싱 오류)", [("error", data["__error__"]), ("path", mj)],
+                              scope=scope, project=project, source=mj))
+        else:
+            for name, cfg in ((data.get("mcpServers") or {}) if isinstance(data, dict) else {}).items():
+                cfg = cfg or {}
+                cards.append(card(name, [
+                    ("command", cfg.get("command", "-")),
+                    ("args", " ".join(cfg.get("args", []) or []) or "-"),
+                    ("env", ", ".join((cfg.get("env") or {}).keys()) or "-"),
+                ], badge="stdio" if cfg.get("command") else cfg.get("type", "?"), ok=True,
+                   scope=scope, project=project, source=mj))
+    return cards
+
 def _agent_cards(ad, scope=None, project=None):
     cards = []
     if ad and os.path.isdir(ad):
-        for name in sorted(os.listdir(ad)):
-            if name.startswith("."):
-                continue
-            full = os.path.join(ad, name)
-            md = full if name.endswith(".md") else os.path.join(full, "AGENT.md")
+        for rel, md, disp, top in _iter_agents(ad):
             meta = read_frontmatter(md) if os.path.exists(md) else {}
-            # 제거 op 는 파일시스템 이름 기준(.md 제거) — frontmatter name 과 다를 수 있음
-            fs_name = name[:-3] if name.endswith(".md") else name
-            edit = None if scope == "project" else {"kind": "agent", "name": fs_name}
-            cards.append(card(meta.get("name", name), [
+            # 제거 op 는 파일시스템 이름 기준 - frontmatter name 과 다를 수 있다.
+            # 프로젝트 항목과 중첩 항목(top=None)은 편집 미부여.
+            edit = {"kind": "agent", "name": top} if (scope != "project" and top) else None
+            cards.append(card(meta.get("name", rel), [
                 ("desc", meta.get("description", "-")),
                 ("tools", meta.get("tools", "-")),
-                ("path", full),
+                ("path", disp),
             ], badge="agent", edit=edit, scope=scope, project=project))
         if scope != "project":
             cards.append(card("＋ 새 에이전트", [("형식", "name 설명…")],
@@ -199,7 +309,8 @@ def _append_project_cards(sections, projects):
     해당 전역 섹션 뒤에 프로젝트 항목으로 append(전역 카드는 불변). title 개수도 재계산."""
     by_prefix = {}
     for sec in sections:
-        for pfx in ("Permissions", "Hooks", "Skills (code)", "Agents"):
+        for pfx in ("Permissions", "Hooks", "Skills (code)", "Agents", "Commands",
+                    "MCP Servers (project)"):
             if sec["title"].startswith(pfx):
                 by_prefix[pfx] = sec
     def add_to(pfx, cards):
@@ -210,12 +321,13 @@ def _append_project_cards(sections, projects):
         if not cdir or not os.path.isdir(cdir):
             continue
         root = os.path.dirname(cdir.rstrip("/\\"))   # <root>/.claude -> <root> (칩 라벨 = 마지막 세그먼트)
-        cs = first_existing([os.path.join(cdir, "settings.json"),
-                             os.path.join(cdir, "settings.local.json")])
-        add_to("Permissions", _perm_cards(cs, "project", root))
-        add_to("Hooks", _hook_cards(cs, "project", root))
+        for cs in _dir_settings(cdir):
+            add_to("Permissions", _perm_cards(cs, "project", root))
+            add_to("Hooks", _hook_cards(cs, "project", root))
         add_to("Skills (code)", _skill_cards(os.path.join(cdir, "skills"), "project", root))
         add_to("Agents", _agent_cards(os.path.join(cdir, "agents"), "project", root))
+        add_to("Commands", _command_cards(os.path.join(cdir, "commands"), "project", root))
+        add_to("MCP Servers (project)", _mcp_json_cards(root, "project", root))
     for pfx, sec in by_prefix.items():
         base = sec["title"].split(" · ")[0]
         sec["title"] = f"{base} · {len(sec['cards'])}"
@@ -257,7 +369,7 @@ def parse(found, project_dirs=None):
                 ("global MCP", ", ".join(g_mcp) or "-"),
                 ("projects", len(projects)),
                 ("account", "set" if data.get("oauthAccount") else "-"),
-                ("dropped", "history(노이즈) 제외 · 민감키 마스킹"),
+                ("dropped", "history(노이즈) 제외 · 관심 키만 선별 추출"),
             ], badge="claude.json", ok=True))
             # 전역 mcpServers 를 카드 단위로 노출(제거 가능) + add 카드
             for name, cfg in (data.get("mcpServers") or {}).items():
@@ -279,12 +391,20 @@ def parse(found, project_dirs=None):
                 ], badge="project"))
     add({"title": f"Claude Code (.claude.json) · {len(cards)}", "source": cj, "cards": cards})
 
-    # 3) Permissions + 4) Hooks (settings.json)
-    cs = found.get("code_settings")
-    perm_cards = _perm_cards(cs)
-    hook_cards = _hook_cards(cs)
-    add({"title": f"Permissions · {len(perm_cards)}", "source": cs, "cards": perm_cards})
-    add({"title": f"Hooks · {len(hook_cards)}", "source": cs, "cards": hook_cards})
+    # 2-1) MCP Servers (project): <root>/.mcp.json. 프로젝트를 지정했을 때만 의미가 있다
+    #      (전역 .mcp.json 개념은 없음 - 전역 MCP 는 .claude.json). 카드는 _append_project_cards 가 채운다.
+    if project_dirs:
+        add({"title": "MCP Servers (project) · 0", "source": None, "cards": []})
+
+    # 3) Permissions + 4) Hooks (settings.json + settings.local.json 을 각각 출처로)
+    chain = _settings_chain(found.get("code_settings"))
+    perm_cards, hook_cards = [], []
+    for f in chain:
+        perm_cards += _perm_cards(f)
+        hook_cards += _hook_cards(f)
+    src = _source_label(chain)
+    add({"title": f"Permissions · {len(perm_cards)}", "source": src, "cards": perm_cards})
+    add({"title": f"Hooks · {len(hook_cards)}", "source": src, "cards": hook_cards})
 
     # 5) Code Skills
     sd = found.get("skills_dir")
@@ -295,6 +415,11 @@ def parse(found, project_dirs=None):
     ad = found.get("agents_dir")
     agent_cards = _agent_cards(ad)
     add({"title": f"Agents · {len(agent_cards)}", "source": ad, "cards": agent_cards})
+
+    # 6-1) Commands (슬래시 커맨드). 라이브러리는 commands 설치를 지원하는데 조회가 없었다.
+    cmd_dir = found.get("commands_dir")
+    cmd_cards = _command_cards(cmd_dir)
+    add({"title": f"Commands · {len(cmd_cards)}", "source": cmd_dir, "cards": cmd_cards})
 
     # 7) Scheduled tasks
     cards = []
@@ -370,7 +495,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   .src{font-size:11px;color:var(--mut)} code{background:#222733;padding:1px 5px;border-radius:4px}
 </style></head><body>
 <h1>Claude 설정 상태 카드</h1>
-<div class="sub">생성: __GENERATED__ · 데이터 인라인(오프라인 열람) · 민감정보 마스킹됨</div>
+<div class="sub">생성: __GENERATED__ · 데이터 인라인(오프라인 열람) · 관심 키만 선별 추출</div>
 <div id="app"></div>
 <script>
 const STATE = __DATA__;

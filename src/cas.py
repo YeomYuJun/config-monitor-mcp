@@ -178,12 +178,20 @@ def cmd_init(args):
 
 # 프로젝트 .claude 를 추적할 때 자동 감지할 설정 파일(존재하는 것만). 나머지는 파일 경로 직접 add.
 PROJECT_PRESET = ("settings.json", "settings.local.json")
+# 산문 설정: 카드로 만들기엔 안 맞지만 바뀌면 Claude 행동이 바뀌므로 diff/복원 가치가 크다.
+# 루트(<root>/CLAUDE.md)와 .claude 양쪽 모두 가능해 PROJECT_PRESET 과 탐색 위치가 다르다.
+PROSE_PRESET = ("CLAUDE.md", "CLAUDE.local.md")
 
 def _claude_dir_of(path):
     """설정 파일이 있을 '.claude' 폴더 해석: 프로젝트 루트를 주면 <root>/.claude,
     .claude 를 직접 주면 그 폴더."""
     sub = os.path.join(path, ".claude")
     return sub if os.path.isdir(sub) else path
+
+def _project_root_of(path):
+    """'.claude' 를 직접 주면 그 부모(프로젝트 루트), 아니면 그대로."""
+    p = path.rstrip("/\\")
+    return os.path.dirname(p) if os.path.basename(p) == ".claude" else path
 
 def _expand_track_path(path):
     """디렉토리는 프로젝트 프리셋(존재하는 settings*.json)으로 확장, 파일/글롭은 그대로 반환."""
@@ -192,8 +200,13 @@ def _expand_track_path(path):
     ap = os.path.abspath(os.path.expanduser(path))
     if os.path.isdir(ap):
         cdir = _claude_dir_of(ap)
-        return [os.path.join(cdir, n) for n in PROJECT_PRESET
-                if os.path.isfile(os.path.join(cdir, n))]
+        out = [os.path.join(cdir, n) for n in PROJECT_PRESET
+               if os.path.isfile(os.path.join(cdir, n))]
+        # CLAUDE.md 는 루트/.claude 어느 쪽에도 올 수 있다(둘이 같은 디렉토리면 중복 제거).
+        for d in dict.fromkeys((_project_root_of(ap), cdir)):
+            out += [os.path.join(d, n) for n in PROSE_PRESET
+                    if os.path.isfile(os.path.join(d, n))]
+        return out
     return [ap]                                         # 파일(미존재도 명시 추적 허용)
 
 def _norm_targets(paths_):
