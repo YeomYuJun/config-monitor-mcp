@@ -31,6 +31,10 @@
      fullscreen 모드(requestDisplayMode)에서는 호스트가 큰 iframe 을 주므로 100vh 로 채운다. */
   .app{height:660px;display:flex;flex-direction:column;overflow:hidden}
   .app.fullscreen{height:100vh}
+  /* 전체화면에서는 호스트 프롬프트 입력창이 iframe 하단에 겹쳐 마지막 콘텐츠를 가린다.
+     스크롤 컨테이너 하단 여백을 늘려 위로 스크롤하면 가려지지 않도록 한다(인라인 위젯은 그대로). */
+  .app.fullscreen .left{padding-bottom:96px}
+  .app.fullscreen .detail{padding-bottom:104px}
 
   /* header */
   header{display:flex;align-items:center;gap:18px;padding:12px 22px;border-bottom:1px solid var(--line);
