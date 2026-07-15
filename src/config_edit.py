@@ -10,7 +10,8 @@ config_edit.py - Claude 설정 파일 안전 편집기 (스냅샷-선행 + atomi
 대상:
   ~/.claude/settings.json                          permissions / hooks
   ~/.claude.json                                   전역 mcpServers (scope=user)
-  %APPDATA%/Claude/claude_desktop_config.json      Desktop mcpServers (scope=desktop)
+  <Desktop>/claude_desktop_config.json             Desktop mcpServers (scope=desktop)
+    <Desktop> = Win32 는 %APPDATA%/Claude, MSIX/Store 는 패키지 하위. paths.py 가 프로브해 해석.
   ~/.claude/skills/<name>/                         code 스킬 (scaffold/remove)
   ~/.claude/agents/<name>.md                       에이전트 (scaffold/remove)
 출력은 항상 JSON 한 줄 ({ok, message, ...}) — MCP 서버가 그대로 파싱.

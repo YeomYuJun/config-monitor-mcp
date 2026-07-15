@@ -6,8 +6,8 @@ test_smoke.py - cas.py / claude_config.py / config_edit.py 스모크 테스트.
   python -m unittest tests.test_smoke -v      (프로젝트 루트에서)
   python -m pytest tests/test_smoke.py         (pytest 있으면)
 
-E2E 디버깅에서 잡은 회귀를 가드한다:
-  - claude_config dump 가 cp949 콘솔에서 UnicodeEncodeError 로 죽지 않는다(P0 원인).
+다음 회귀를 가드한다:
+  - claude_config dump 가 cp949 콘솔에서 UnicodeEncodeError 로 죽지 않는다.
   - cas watcher-status 가 PS 의 BOM + tz-aware heartbeat 를 견딘다.
 """
 import json, os, subprocess, sys, tempfile, unittest
@@ -607,7 +607,7 @@ class DesktopPathResolve(unittest.TestCase):
     def setUp(self):
         if SRC not in sys.path:
             sys.path.insert(0, SRC)
-        import paths                       # 없으면 여기서 실패(=RED, 기능 미구현)
+        import paths
         self.paths = paths
         self.tmp = tempfile.mkdtemp(prefix="paths_test_")
         self.appdata = os.path.join(self.tmp, "Roaming")

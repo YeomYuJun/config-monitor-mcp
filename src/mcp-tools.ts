@@ -220,7 +220,7 @@ export function buildTools(scriptDir: string): ToolDef[] {
       name: "watcher_stop",
       meta: {
         title: "Stop Watcher",
-        description: "실행 중인 watcher 프로세스를 종료(pid 기준)",
+        description: "실행 중인 watcher 프로세스를 모두 종료(watcher.ps1 커맨드라인 매칭). Windows 전용",
         inputSchema: z.object({}), annotations: WRITE,
       },
       run: async () => {
