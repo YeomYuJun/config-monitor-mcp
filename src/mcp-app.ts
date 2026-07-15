@@ -65,6 +65,8 @@ const I18N: Record<string, Record<string, string>> = {
     libEnvHint: "환경변수(CLAUDE_CONFIG_LIBRARIES)로 지정되어 대시보드에서 제거 불가",
     libInstallSelected: "선택 설치", libInstallGroup: "그룹 설치", libInstallGroupConfirm: "그룹 설치 확정",
     libInstallGroupHint: "이 그룹의 미설치 스킬 전체 설치", libAllInstalled: "이미 전부 설치됨",
+    installTarget: "설치 대상", targetGlobal: "전역 (~/.claude)", projPathPh: "프로젝트 경로", rootItems: "루트 항목 · 폴더 없음",
+    toastGroup: "그룹 설치 완료", toastSel: "선택 설치 완료", toastTarget: "설치 대상 추가됨", cntUnit: "개",
   },
   en: {
     newFile: "New", modified: "Modified", deleted: "Deleted", unchanged: "Same",
@@ -109,6 +111,8 @@ const I18N: Record<string, Record<string, string>> = {
     libEnvHint: "Set via CLAUDE_CONFIG_LIBRARIES env; can't be removed from the dashboard",
     libInstallSelected: "Install selected", libInstallGroup: "Install group", libInstallGroupConfirm: "Confirm install",
     libInstallGroupHint: "Install all not-installed skills in this group", libAllInstalled: "All already installed",
+    installTarget: "Install to", targetGlobal: "Global (~/.claude)", projPathPh: "Project path", rootItems: "root items · no folder",
+    toastGroup: "Group install done", toastSel: "Selected install done", toastTarget: "Install target added", cntUnit: "",
   },
 };
 
@@ -155,7 +159,11 @@ const collapsed = new Set<string>();         // 접힌 섹션 title
 const secTitles = new Set<string>();         // 접기 가능한 섹션 title (전부 접기 대상)
 let collapsedInit = false;                    // 기본 접힘 1회만 적용
 const libGroupOpen = new Set<string>();      // 펼친 라이브러리 스킬 그룹 경로(기본 접힘)
-const libChecked = new Set<string>();        // 선택 설치용 체크된 스킬 key
+const libChecked = new Set<string>();        // 선택 설치용 체크된 항목 key(카테고리 무관)
+const libOpen = new Set<string>(["skills"]); // 펼친 카테고리(기본 Skills 만, 데모와 동일)
+const libTargetPaths: string[] = [];         // 설치 대상 바에 수동 추가된 대상 루트(refresh 후에도 유지)
+let libTargetSel = "";                        // 선택된 설치 대상 루트("" = 전역 ~/.claude)
+let libSelBarUpdate: (() => void) | null = null; // 체크박스 -> 상단 "선택 설치 (N)" 카운트 갱신 훅
 
 let toastT: number | undefined;
 function flashToast(msg: string): void {
@@ -526,42 +534,50 @@ function mkItemActions(it: any): HTMLElement {
 
 const libKey = (it: any): string => `${it.lib}|${it.category}|${it.relpath}`;
 
-// 여러 스킬 순차 설치 후 1회 새로고침(설치마다 새로고침하면 116개에서 폭주).
-async function installMany(items: any[]): Promise<void> {
+// 여러 항목 순차 설치 후 1회 새로고침(설치마다 새로고침하면 100+개에서 폭주).
+// target: 설치 대상 루트("" 이면 기본 ~/.claude). done: 완료 토스트 빌더(그룹/선택 설치가 서로 다른 문구).
+interface InstallOpts { target?: string; done?: (ok: number, fail: number) => string; }
+async function installMany(items: any[], opts: InstallOpts = {}): Promise<void> {
   let ok = 0, fail = 0;
   for (const it of items) {
+    const args: Record<string, unknown> = { category: it.category, path: it.relpath, lib: it.lib };
+    if (opts.target) args.target = opts.target;
     try {
-      const r = jparse(await callTool("library_install", { category: it.category, path: it.relpath, lib: it.lib }));
+      const r = jparse(await callTool("library_install", args));
       if (r && r.ok === false) fail++; else ok++;
     } catch { fail++; }
   }
   libChecked.clear();
-  flashToast(`${t("libInstall")} ${ok} ${t("done")}${fail ? ` · ${fail} ${t("failed")}` : ""}`);
+  const failSfx = fail ? ` · ${fail} ${t("failed")}` : "";
+  flashToast((opts.done ? opts.done(ok, fail) : `${t("libInstall")} ${ok} ${t("done")}`) + failSfx);
   await refresh();
 }
 
-// 스킬을 그룹 경로(가변 깊이)로 트리화해 접이식으로 렌더. 각 스킬: 체크박스 + 상태 + 설치/제거.
-function renderSkillTree(skills: any[]): HTMLElement {
-  const wrap = document.createElement("div");
-  wrap.style.gridColumn = "1 / -1";
-
-  const bar = document.createElement("div");
-  bar.className = "libselbar";
-  const selBtn = document.createElement("button");
-  selBtn.className = "addbtn";
-  const updateBar = () => {
-    const n = skills.filter((s) => libChecked.has(libKey(s))).length;
-    selBtn.textContent = `${t("libInstallSelected")} (${n})`;
-    (selBtn as HTMLButtonElement).disabled = n === 0;
-    selBtn.style.opacity = n ? "1" : ".5";
-  };
-  selBtn.addEventListener("click", async () => {
-    const chosen = skills.filter((s) => libChecked.has(libKey(s)));
-    if (chosen.length) await installMany(chosen);
+// 콤팩트 항목 행: [체크박스] name [배지] [설치/동기화/제거]. 전 카테고리(agents/commands/skills) 공용.
+function mkLibRow(it: any): HTMLElement {
+  const [label, cls] = libStatus(it.status);
+  const row = document.createElement("div");
+  row.className = "libskill";
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.className = "libcb";
+  cb.checked = libChecked.has(libKey(it));
+  cb.addEventListener("change", () => {
+    if (cb.checked) libChecked.add(libKey(it)); else libChecked.delete(libKey(it));
+    libSelBarUpdate?.();
   });
-  bar.appendChild(selBtn);
-  wrap.appendChild(bar);
+  const nm = document.createElement("span");
+  nm.className = "sknm";
+  nm.textContent = it.name;
+  const bd = document.createElement("span");
+  bd.className = "badge" + (cls ? " " + cls : "");
+  bd.textContent = label + (it.kit_ref ? " · " + t("kitRef") : "");
+  row.append(cb, nm, bd, mkItemActions(it));
+  return row;
+}
 
+// 스킬을 group 경로(가변 깊이)로 트리화. 폴더 그룹은 접이식+그룹설치, 폴더 없는 루트 항목은 구분선 아래 나열.
+function renderSkillTreeBody(skills: any[]): HTMLElement {
   interface Node { dirs: Map<string, Node>; skills: any[]; }
   const root: Node = { dirs: new Map(), skills: [] };
   for (const it of skills) {
@@ -577,29 +593,9 @@ function renderSkillTree(skills: any[]): HTMLElement {
     for (const c of node.dirs.values()) out = out.concat(collect(c));
     return out;
   };
-  const mkSkillRow = (it: any): HTMLElement => {
-    const [label, cls] = libStatus(it.status);
-    const row = document.createElement("div");
-    row.className = "libskill";
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.className = "libcb";
-    cb.checked = libChecked.has(libKey(it));
-    cb.addEventListener("change", () => {
-      if (cb.checked) libChecked.add(libKey(it)); else libChecked.delete(libKey(it));
-      updateBar();
-    });
-    const nm = document.createElement("span");
-    nm.className = "sknm";
-    nm.textContent = it.name;
-    const bd = document.createElement("span");
-    bd.className = "badge" + (cls === "ok" ? " ok" : "");
-    bd.textContent = label + (it.kit_ref ? " · " + t("kitRef") : "");
-    row.append(cb, nm, bd, mkItemActions(it));
-    return row;
-  };
-  const renderNode = (node: Node, path: string): HTMLElement => {
-    const frag = document.createElement("div");
+  // 폴더 그룹만 렌더(루트 loose 항목 제외). 그룹 내부는 renderNode 로 재귀(하위 그룹 + 그 폴더 직속 항목).
+  const renderGroups = (node: Node, path: string): HTMLElement => {
+    const box = document.createElement("div");
     for (const [seg, child] of node.dirs) {
       const gpath = path ? `${path}/${seg}` : seg;
       const all = collect(child);
@@ -610,7 +606,8 @@ function renderSkillTree(skills: any[]): HTMLElement {
       gh.className = "libgrphead";
       gh.innerHTML =
         `<span class="chev4">▸</span><span class="gname">${esc(seg)}</span>` +
-        `<span class="gcount">${all.length}${installed ? ` · ${installed} ${esc(t("libInstalled"))}` : ""}</span>`;
+        `<span class="gcount">${all.length}</span>` +
+        (installed ? `<span class="ginst">${installed} ${esc(t("libInstalled"))}</span>` : "");
       const gall = document.createElement("button");
       gall.className = "linkbtn gallbtn";
       gall.textContent = t("libInstallGroup");
@@ -620,7 +617,7 @@ function renderSkillTree(skills: any[]): HTMLElement {
         const pending = all.filter((s) => s.status !== "installed");
         if (!pending.length) { flashToast(t("libAllInstalled")); return; }
         if (gall.textContent !== t("libInstallGroupConfirm")) { gall.textContent = t("libInstallGroupConfirm"); return; }
-        await installMany(pending);
+        await installMany(pending, { done: (n) => `${t("toastGroup")} · ${seg} · ${n}${t("cntUnit")}` });
       });
       gh.appendChild(gall);
       gh.addEventListener("click", () => {
@@ -631,14 +628,103 @@ function renderSkillTree(skills: any[]): HTMLElement {
       gbody.className = "libgrpbody";
       gbody.appendChild(renderNode(child, gpath));
       grp.append(gh, gbody);
-      frag.appendChild(grp);
+      box.appendChild(grp);
     }
-    for (const it of node.skills) frag.appendChild(mkSkillRow(it));
-    return frag;
+    return box;
   };
-  wrap.appendChild(renderNode(root, ""));
-  updateBar();
+  const renderNode = (node: Node, path: string): HTMLElement => {
+    const box = document.createElement("div");
+    box.appendChild(renderGroups(node, path));
+    for (const it of node.skills) box.appendChild(mkLibRow(it));  // 이 폴더 직속 스킬
+    return box;
+  };
+
+  const frag = document.createElement("div");
+  frag.appendChild(renderGroups(root, ""));
+  if (root.skills.length) {
+    const div = document.createElement("div");
+    div.className = "librootdiv";
+    div.innerHTML =
+      `<span class="rline"></span>` +
+      `<span class="rlbl">${esc(t("rootItems"))} · ${root.skills.length}</span>` +
+      `<span class="rline"></span>`;
+    frag.appendChild(div);
+    for (const it of root.skills) frag.appendChild(mkLibRow(it));
+  }
+  return frag;
+}
+
+// 카테고리 토글 섹션: 헤더(chevron + 제목 + 개수 pill + n 설치됨 + 우측 읽기패턴 힌트) + 접이식 본문.
+function renderCategory(cat: string, items: any[], title: string, hint: string): HTMLElement {
+  const installed = items.filter((i) => i.status === "installed").length;
+  const wrap = document.createElement("div");
+  wrap.className = "libcat" + (libOpen.has(cat) ? "" : " collapsed");
+  const head = document.createElement("div");
+  head.className = "libcathead";
+  head.innerHTML =
+    `<span class="chev2">▾</span><span class="ctitle">${esc(title)}</span>` +
+    `<span class="seccount">${items.length}</span>` +
+    (installed ? `<span class="cinst">${installed} ${esc(t("libInstalled"))}</span>` : "") +
+    `<span class="chint">${esc(hint)}</span>`;
+  head.addEventListener("click", () => {
+    if (libOpen.has(cat)) libOpen.delete(cat); else libOpen.add(cat);
+    wrap.classList.toggle("collapsed");
+  });
+  const body = document.createElement("div");
+  body.className = "libcatbody";
+  if (!items.length) body.innerHTML = `<div class="empty">${esc(t("libEmpty"))}</div>`;
+  else if (cat === "skills") body.appendChild(renderSkillTreeBody(items));
+  else for (const it of items) body.appendChild(mkLibRow(it));
+  wrap.append(head, body);
   return wrap;
+}
+
+// 설치 대상 바(Library 본문 최상단): [설치 대상] [대상 select] [경로 input] [선택 설치 (N)].
+// 대상 select 는 "전역(~/.claude)" + 사용자가 입력행에서 Enter 로 추가한 대상들. 선택 설치는 체크된 전 카테고리 항목을 대상으로 설치.
+function buildTargetBar(allItems: any[]): HTMLElement {
+  const bar = document.createElement("div");
+  bar.className = "libtbar";
+  const lbl = document.createElement("span");
+  lbl.className = "tlbl";
+  lbl.textContent = t("installTarget");
+  const sel = document.createElement("select");
+  const fillSel = () => {
+    sel.innerHTML =
+      `<option value="">${esc(t("targetGlobal"))}</option>` +
+      libTargetPaths.map((p) => `<option value="${esc(p)}">${esc(p)}</option>`).join("");
+    sel.value = libTargetSel;
+  };
+  fillSel();
+  sel.addEventListener("change", () => { libTargetSel = sel.value; });
+  const input = document.createElement("input");
+  input.placeholder = t("projPathPh");
+  input.addEventListener("keydown", (e) => {
+    if ((e as KeyboardEvent).key !== "Enter") return;
+    const v = input.value.trim();
+    if (!v) return;
+    if (!libTargetPaths.includes(v)) libTargetPaths.push(v);
+    libTargetSel = v;
+    fillSel();
+    input.value = "";
+    flashToast(`${t("toastTarget")} · ${v}`);
+  });
+  const selBtn = document.createElement("button");
+  selBtn.className = "addbtn selbtn";
+  const update = () => {
+    const n = allItems.filter((it) => libChecked.has(libKey(it))).length;
+    selBtn.textContent = `${t("libInstallSelected")} (${n})`;
+    (selBtn as HTMLButtonElement).disabled = n === 0;
+    selBtn.style.opacity = n ? "1" : ".5";
+  };
+  libSelBarUpdate = update;
+  update();
+  selBtn.addEventListener("click", async () => {
+    const chosen = allItems.filter((it) => libChecked.has(libKey(it)));
+    if (!chosen.length) return;
+    await installMany(chosen, { target: libTargetSel || undefined, done: (n) => `${t("toastSel")} · ${n}${t("cntUnit")}` });
+  });
+  bar.append(lbl, sel, input, selBtn);
+  return bar;
 }
 
 function renderLibrary(host: HTMLElement, res: any): void {
@@ -647,18 +733,22 @@ function renderLibrary(host: HTMLElement, res: any): void {
   secEl.dataset.col = "1";
   secTitles.add("Library");
   const libs = (res && res.libraries) || [];
-  const items: any[] = [];
+  // 카테고리별 수집(agents/commands/skills). allItems 는 상단 "선택 설치" 카운트/설치 대상용.
+  const byCat: Record<string, any[]> = { agents: [], commands: [], skills: [] };
   for (const l of libs) {
     for (const [cat, arr] of Object.entries(l.categories || {})) {
-      for (const it of arr as any[]) items.push({ ...it, category: cat, lib: l.lib });
+      const bucket = byCat[cat] || (byCat[cat] = []);
+      for (const it of arr as any[]) bucket.push({ ...it, category: cat, lib: l.lib });
     }
   }
+  const allItems = [...byCat.agents, ...byCat.commands, ...byCat.skills];
+  libSelBarUpdate = null;  // 이전 렌더의 카운트 훅 무효화(새 설치 대상 바가 다시 설정)
   const head = document.createElement("div");
   head.className = "sechead";
   head.innerHTML =
     `<div class="secrow"><span class="chev2">▾</span>` +
     `<span class="sectitle">${esc(t("libSectionTitle"))}</span>` +
-    `<span class="seccount">${items.length}</span></div>` +
+    `<span class="seccount">${allItems.length}</span></div>` +
     (libs.length ? `<div class="secsrc"><span class="lbl">${esc(t("source"))}</span><span class="val">${esc(libs.map((l: any) => l.lib).join(" · "))}</span></div>` : "");
   head.addEventListener("click", () => {
     if (collapsed.has("Library")) collapsed.delete("Library"); else collapsed.add("Library");
@@ -668,20 +758,15 @@ function renderLibrary(host: HTMLElement, res: any): void {
 
   const body = document.createElement("div");
   body.className = "secbody";
-  if (!items.length) body.innerHTML = `<div class="empty">${esc(t("libEmpty"))}</div>`;
-  // agents/commands 는 평면 카드, skills 는 가변 깊이 트리(체크박스 선택 설치).
-  for (const it of items.filter((x) => x.category !== "skills")) {
-    const [label, cls] = libStatus(it.status);
-    const row = document.createElement("div");
-    row.className = "card";
-    row.innerHTML =
-      `<div class="cname"><span class="nm">${esc(it.category)} / ${esc(it.name)}</span>` +
-      `<span class="badge ${cls === "ok" ? "ok" : ""}">${esc(label)}${it.kit_ref ? " · " + esc(t("kitRef")) : ""}</span></div>`;
-    row.appendChild(mkItemActions(it));
-    body.appendChild(row);
+  // 미등록(라이브러리 0개)이라도 섹션 구조는 동일하게: 카테고리 자리에 "라이브러리 항목 없음" + 하단 경로 카드.
+  if (!libs.length) {
+    body.innerHTML = `<div class="empty">${esc(t("libEmpty"))}</div>`;
+  } else {
+    body.appendChild(buildTargetBar(allItems));
+    body.appendChild(renderCategory("agents", byCat.agents, "Agents", "agents/*.md"));
+    body.appendChild(renderCategory("commands", byCat.commands, "Commands", "commands/*.md"));
+    body.appendChild(renderCategory("skills", byCat.skills, "Skills", "skills/<name>/SKILL.md"));
   }
-  const skillItems = items.filter((x) => x.category === "skills");
-  if (skillItems.length) body.appendChild(renderSkillTree(skillItems));
   // 다중 라이브러리 경로 관리(전체 폭): 등록된 경로 목록(제거 가능) + 신규 경로 등록 입력행.
   // env(CLAUDE_CONFIG_LIBRARIES) 지정 경로는 대시보드에서 제거 불가 -> env 태그만 표시.
   const mkPathChip = (l: any): HTMLElement => {
@@ -743,22 +828,13 @@ function renderLibrary(host: HTMLElement, res: any): void {
 
 async function refreshLibrary(): Promise<void> {
   const host = $("config");
+  // 라이브러리 미설정/스캔 실패는 정상 상태: 빈 목록으로 renderLibrary 가 동일 섹션 구조 + 경로 등록 카드를 렌더.
+  let res: any = { libraries: [] };
   try {
-    const res = jparse(await callTool("library_scan"));
-    // 라이브러리 미설정(빈 목록)은 정상 상태 — 섹션 대신 등록 UI 로 진행
-    if (res && res.ok !== false && (res.libraries || []).length) { renderLibrary(host, res); return; }
-  } catch { /* 오류 -> 등록 UI */ }
-  // 등록 UI: 라이브러리 경로 입력 1회
-  const secEl = document.createElement("div");
-  secEl.className = "sec";
-  secEl.innerHTML =
-    `<div class="sechead"><div class="secrow"><span class="chev2">▾</span>` +
-    `<span class="sectitle">${esc(t("libSectionTitle"))}</span><span class="seccount">${esc(t("libUnregistered"))}</span></div></div>`;
-  const body = document.createElement("div");
-  body.className = "secbody";
-  body.appendChild(buildLibAdder());
-  secEl.appendChild(body);
-  host.appendChild(secEl);
+    const parsed = jparse(await callTool("library_scan"));
+    if (parsed && parsed.ok !== false) res = parsed;
+  } catch { /* 스캔 오류 -> 빈 목록(미등록)으로 진행 */ }
+  renderLibrary(host, res);
 }
 
 // ----- detail panel: history + diff -----

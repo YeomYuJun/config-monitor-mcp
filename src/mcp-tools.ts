@@ -362,10 +362,13 @@ export function buildTools(scriptDir: string): ToolDef[] {
           category: z.enum(["agents", "skills", "commands"]),
           path: z.string().describe("카테고리 루트 기준 상대경로. skills 는 그룹 포함 가능, agents/commands 는 이름"),
           lib: z.string().optional(),
+          target: z.string().optional().describe("설치 대상 루트(기본 ~/.claude). 프로젝트에 설치하려면 그 프로젝트의 .claude 경로"),
         }), annotations: EDIT,
       },
-      run: async (a: { category: string; path: string; lib?: string }) => {
-        const args = ["install", a.category, a.path];
+      run: async (a: { category: string; path: string; lib?: string; target?: string }) => {
+        // --target 은 부모 파서 옵션이라 subcommand 앞에 와야 argparse 가 인식(--lib 는 install 서브파서 옵션).
+        const args = a.target ? ["--target", a.target] : [];
+        args.push("install", a.category, a.path);
         if (a.lib) args.push("--lib", a.lib);
         return jsonResult(await runPy("library.py", args));
       },

@@ -127,6 +127,7 @@
   .cname .nm{font-weight:600;font-size:13px;word-break:break-all}
   .badge{font-size:10px;font-weight:600;padding:2px 7px;border-radius:4px;white-space:nowrap;background:#E6E8EC;color:var(--mut)}
   .badge.ok{background:var(--okbg);color:var(--ok)}
+  .badge.warn{background:var(--warnbg);color:var(--warn)}
   .kv{display:flex;gap:11px;font-size:12px;margin-top:6px}
   .kv .k{font-size:10px;text-transform:uppercase;letter-spacing:.05em;font-weight:600;color:#5F6670;
     min-width:60px;flex:0 0 auto;padding-top:1px}
@@ -146,24 +147,48 @@
   .chip .libenv{font-size:9px;letter-spacing:.04em;text-transform:uppercase;color:var(--mut3);
     background:#E6E8EC;border-radius:3px;padding:1px 5px;flex:0 0 auto}
 
-  /* library skill tree (가변 깊이 그룹 + 체크박스 선택 설치) */
-  .libselbar{display:flex;justify-content:flex-end;margin-bottom:8px}
+  /* library: 설치 대상 바 + 카테고리 토글 + 스킬 폴더 트리(가변 깊이) */
+  .libtbar{display:flex;align-items:center;gap:8px;margin-bottom:11px;flex-wrap:wrap}
+  .libtbar .tlbl{font-size:11px;font-weight:600;color:var(--mut);flex:0 0 auto}
+  .libtbar select{padding:6px 8px;border:1px solid var(--line2);border-radius:6px;background:var(--panel);
+    font-family:var(--mono);font-size:11.5px;color:var(--fg2);max-width:210px}
+  .libtbar input{flex:1;min-width:120px;padding:6px 9px;border:1px solid var(--line2);border-radius:6px;
+    font-family:var(--mono);font-size:11.5px}
+  .libtbar .selbtn{flex:0 0 auto}
+
+  .libcat{border:1px solid var(--line2);border-radius:7px;background:#F6F7FA;margin-bottom:8px;overflow:hidden}
+  .libcathead{display:flex;align-items:center;gap:9px;padding:9px 12px;cursor:pointer;user-select:none}
+  .libcathead:hover{background:#EEF0F4}
+  .libcathead .chev2{display:inline-block;transition:transform .15s;color:var(--mut2);font-size:10px;flex:0 0 auto}
+  .libcat.collapsed .chev2{transform:rotate(-90deg)}
+  .libcathead .ctitle{font-weight:600;font-size:13px}
+  .libcathead .cinst{font-size:10.5px;font-weight:600;color:var(--ok)}
+  .libcathead .chint{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--mut3);flex:0 0 auto}
+  .libcatbody{padding:4px 11px 10px}
+  .libcat.collapsed .libcatbody{display:none}
+  .libcatbody>.empty{padding:8px 2px}
+
   .libgrp{border:1px solid var(--line2);border-radius:6px;background:var(--panel);margin-bottom:6px;overflow:hidden}
   .libgrphead{display:flex;align-items:center;gap:8px;padding:7px 11px;cursor:pointer;background:#F3F4F6;user-select:none}
   .libgrphead:hover{background:#ECEEF2}
+  .libgrp.open>.libgrphead{box-shadow:inset 3px 0 0 var(--accent)}
   .libgrphead .chev4{display:inline-block;transition:transform .15s;font-size:10px;color:var(--mut2);flex:0 0 auto}
   .libgrp.open>.libgrphead .chev4{transform:rotate(90deg)}
   .libgrphead .gname{font-weight:600;font-size:12.5px}
-  .libgrphead .gcount{font-family:var(--mono);font-size:10.5px;color:var(--mut)}
+  .libgrphead .gcount{font-family:var(--mono);font-size:10.5px;color:var(--mut);background:#E6E8EC;padding:0 6px;border-radius:8px}
+  .libgrphead .ginst{font-family:var(--mono);font-size:10.5px;color:var(--ok);font-weight:600}
   .libgrphead .gallbtn{margin-left:auto;font-size:11px;flex:0 0 auto}
-  .libgrpbody{display:none;padding:5px 8px 5px 14px}
+  .libgrpbody{display:none;padding:5px 8px 5px 22px;background:#F6F7FA}
   .libgrp.open>.libgrpbody{display:block}
   .libskill{display:flex;align-items:center;gap:9px;padding:5px 7px;border-radius:5px}
-  .libskill:hover{background:#F4F6FA}
-  .libskill .libcb{width:15px;height:15px;accent-color:var(--accent);cursor:pointer;flex:0 0 auto;margin:0}
+  .libskill:hover{background:#FFFFFF}
+  .libskill .libcb{width:16px;height:16px;accent-color:var(--accent);cursor:pointer;flex:0 0 auto;margin:0}
   .libskill .sknm{font-family:var(--mono);font-size:12px;color:var(--fg);flex:1;min-width:0;word-break:break-all}
   .libskill .badge{flex:0 0 auto}
   .libskill .edit{flex-direction:row;margin:0;gap:6px;flex:0 0 auto}
+  .librootdiv{display:flex;align-items:center;gap:8px;margin:9px 2px 5px}
+  .librootdiv .rline{flex:1;height:1px;background:var(--line2)}
+  .librootdiv .rlbl{font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--mut3);font-weight:600;flex:0 0 auto}
   .chip .cx{border:none;background:none;color:var(--mut3);cursor:pointer;font-size:12px;padding:0 1px;line-height:1}
   .chip .cx:hover{color:var(--del)}
   .chip .ok{border:none;background:var(--del);color:#fff;border-radius:4px;padding:1px 7px;font-size:10px;cursor:pointer}
