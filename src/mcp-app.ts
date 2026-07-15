@@ -1095,7 +1095,9 @@ function renderDiff(diff: string): void {
   }
   const fromLabel = revLabel(fromRev);
   const toLabel = toRev === "work" ? t("workingShort") : revLabel(toRev);
-  const lines = diff.split("\n").map((line) => {
+  // CRLF 파일의 diff 는 각 줄 끝에 \r 이 남는데, .dl 이 white-space:pre-wrap 이라
+  // 그 \r 이 segment break 로 렌더돼 빈 줄처럼 보인다. 개행 종류와 무관하게 분리.
+  const lines = diff.split(/\r?\n/).map((line) => {
     let cls = "";
     if (line.startsWith("+") && !line.startsWith("+++")) cls = "add";
     else if (line.startsWith("-") && !line.startsWith("---")) cls = "del";

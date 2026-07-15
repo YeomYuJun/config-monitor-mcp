@@ -103,6 +103,30 @@ class CasRoundTrip(unittest.TestCase):
         self.assertNotEqual(rc, 0)
         self.assertFalse(json.loads(out)["ok"])
 
+    def test_crlf_content_not_double_newlined(self):
+        # 회귀: stdout 이 텍스트 모드면 쓸 때 \n 이 \r\n 으로 바뀌어, 이미 CRLF 인 파일 내용이
+        # \r\r\n 이 된다. 그러면 파일 뷰어/diff 에서 개행이 2번으로 보인다(빈 줄).
+        # cat/diff 모두 바이트 그대로 나와야 한다.
+        f = os.path.join(self.tmp, "crlf.txt")
+        with open(f, "wb") as fh:
+            fh.write(b"A\n")
+        self.cas("init")
+        self.cas("track", f)
+        self.cas("snapshot", "-m", "base")
+        with open(f, "wb") as fh:
+            fh.write(b"A\r\nB\r\n")   # 에디터가 CRLF 로 다시 씀
+
+        def raw(*args):
+            e = dict(os.environ)
+            e["CLAUDE_CAS_NO_DEFAULT_TRACK"] = "1"
+            p = subprocess.run([sys.executable, CAS, "--store", self.store, *args],
+                               capture_output=True, env=e, timeout=60)   # bytes(개행 변환 없음)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            return p.stdout
+
+        self.assertEqual(raw("cat", f), b"A\r\nB\r\n")    # 내용 그대로
+        self.assertNotIn(b"\r\r\n", raw("diff", f))       # diff 의 + 줄도 doubling 없음
+
     def test_watcher_status_no_watcher(self):
         self.cas("init")
         rc, out, err = self.cas("watcher-status")
