@@ -107,16 +107,121 @@ def _short(v, n=160):
 
 DESC_KEYS = {"desc", "description", "설명", "summary"}
 
-def card(name, kv, badge=None, ok=False, edit=None):
+def card(name, kv, badge=None, ok=False, edit=None, scope=None, project=None):
     # 서술형 값은 넉넉히 담고(줄 수 표시는 UI 의 -webkit-line-clamp 가 담당),
     # 코드형/경로 값만 160자 선절단 — 슬라이더(2~10줄) 전 구간이 실제 텍스트로 채워지게.
     c = {"name": name, "badge": badge, "ok": ok,
          "kv": [[k, _short(v, 600 if str(k).lower() in DESC_KEYS else 160)] for k, v in kv]}
     if edit:  # UI 가 인라인 add/remove 버튼을 그릴 때 쓰는 구조화 메타
         c["edit"] = edit
+    # scope/project 는 프로젝트 전용 항목에만 붙는다(전역 항목은 미부여 -> 출력 불변).
+    if scope:
+        c["scope"] = scope
+    if project:
+        c["project"] = project
     return c
 
-def parse(found):
+# --- 섹션별 카드 빌더(전역/프로젝트 공용). scope=None 이면 전역(기존 동작 그대로),
+#     scope="project" 이면 프로젝트 항목으로 태깅. 프로젝트 skills/agents 는 편집 대상이
+#     전역 디렉토리라 오설치/오삭제 위험 -> 뷰 전용(edit 미부여). permissions/hooks 만 편집 가능(대상 settings 파일 지정).
+def _perm_cards(cs, scope=None, project=None):
+    cards = []
+    if cs and os.path.exists(cs):
+        perms = (safe_load(cs) or {}).get("permissions", {})
+        for kind in ("allow", "deny", "ask"):
+            lst = perms.get(kind, []) or []
+            edit = {"kind": "perm", "permKind": kind, "items": list(lst)}
+            if scope == "project":
+                edit["settings"] = cs
+            cards.append(card(kind, [], badge=str(len(lst)), ok=(kind == "allow"),
+                              edit=edit, scope=scope, project=project))
+    return cards
+
+def _hook_cards(cs, scope=None, project=None):
+    cards = []
+    if cs and os.path.exists(cs):
+        hooks = (safe_load(cs) or {}).get("hooks", {})
+        for event, entries in hooks.items():
+            cmds = [hk.get("command", "") for ent in (entries or [])
+                    for hk in (ent.get("hooks", []) or [])]
+            edit = {"kind": "hook", "event": event, "items": cmds}
+            if scope == "project":
+                edit["settings"] = cs
+            cards.append(card(event, [("matchers", len(entries or []))], badge="hook",
+                              edit=edit, scope=scope, project=project))
+    return cards
+
+def _skill_cards(sd, scope=None, project=None):
+    cards = []
+    if sd and os.path.isdir(sd):
+        for name in sorted(os.listdir(sd)):
+            if name.startswith("."):
+                continue
+            full = os.path.join(sd, name)
+            if os.path.isdir(full):
+                has_md = os.path.exists(os.path.join(full, "SKILL.md"))
+                meta = read_frontmatter(os.path.join(full, "SKILL.md")) if has_md else {}
+                edit = None if scope == "project" else {"kind": "skill", "name": name}
+                cards.append(card(name, [("desc", meta.get("description", "-")), ("path", full)],
+                                  badge="SKILL.md" if has_md else "no md", ok=has_md,
+                                  edit=edit, scope=scope, project=project))
+        if scope != "project":
+            cards.append(card("＋ 새 스킬", [("형식", "name 설명…")],
+                              badge="add", edit={"kind": "skill-add"}))
+    return cards
+
+def _agent_cards(ad, scope=None, project=None):
+    cards = []
+    if ad and os.path.isdir(ad):
+        for name in sorted(os.listdir(ad)):
+            if name.startswith("."):
+                continue
+            full = os.path.join(ad, name)
+            md = full if name.endswith(".md") else os.path.join(full, "AGENT.md")
+            meta = read_frontmatter(md) if os.path.exists(md) else {}
+            # 제거 op 는 파일시스템 이름 기준(.md 제거) — frontmatter name 과 다를 수 있음
+            fs_name = name[:-3] if name.endswith(".md") else name
+            edit = None if scope == "project" else {"kind": "agent", "name": fs_name}
+            cards.append(card(meta.get("name", name), [
+                ("desc", meta.get("description", "-")),
+                ("tools", meta.get("tools", "-")),
+                ("path", full),
+            ], badge="agent", edit=edit, scope=scope, project=project))
+        if scope != "project":
+            cards.append(card("＋ 새 에이전트", [("형식", "name 설명…")],
+                              badge="add", edit={"kind": "agent-add"}))
+    return cards
+
+def _append_project_cards(sections, projects):
+    """추적 중인 프로젝트 .claude 디렉토리들의 permissions/hooks/skills/agents 를 스캔해
+    해당 전역 섹션 뒤에 프로젝트 항목으로 append(전역 카드는 불변). title 개수도 재계산."""
+    by_prefix = {}
+    for sec in sections:
+        for pfx in ("Permissions", "Hooks", "Skills (code)", "Agents"):
+            if sec["title"].startswith(pfx):
+                by_prefix[pfx] = sec
+    def add_to(pfx, cards):
+        sec = by_prefix.get(pfx)
+        if sec is not None and cards:
+            sec["cards"].extend(cards)
+    for cdir in projects:
+        if not cdir or not os.path.isdir(cdir):
+            continue
+        root = os.path.dirname(cdir.rstrip("/\\"))   # <root>/.claude -> <root> (칩 라벨 = 마지막 세그먼트)
+        cs = first_existing([os.path.join(cdir, "settings.json"),
+                             os.path.join(cdir, "settings.local.json")])
+        add_to("Permissions", _perm_cards(cs, "project", root))
+        add_to("Hooks", _hook_cards(cs, "project", root))
+        add_to("Skills (code)", _skill_cards(os.path.join(cdir, "skills"), "project", root))
+        add_to("Agents", _agent_cards(os.path.join(cdir, "agents"), "project", root))
+    for pfx, sec in by_prefix.items():
+        base = sec["title"].split(" · ")[0]
+        sec["title"] = f"{base} · {len(sec['cards'])}"
+
+
+def parse(found, project_dirs=None):
+    # 주의: 아래 섹션2 에서 지역변수 projects(=.claude.json 의 projects 맵)를 쓰므로
+    # 파라미터명은 project_dirs 로 구분(같은 이름이면 섀도잉으로 프로젝트 append 가 오작동).
     state = {"generated": datetime.now().isoformat(), "sources": found, "sections": []}
     add = state["sections"].append
 
@@ -174,62 +279,20 @@ def parse(found):
 
     # 3) Permissions + 4) Hooks (settings.json)
     cs = found.get("code_settings")
-    perm_cards, hook_cards = [], []
-    if cs and os.path.exists(cs):
-        data = safe_load(cs)
-        perms = (data or {}).get("permissions", {})
-        for kind in ("allow", "deny", "ask"):
-            lst = perms.get(kind, []) or []
-            # 빈 종류도 카드로 노출 -> UI 에서 규칙 추가 가능하게.
-            perm_cards.append(card(kind, [], badge=str(len(lst)), ok=(kind == "allow"),
-                                   edit={"kind": "perm", "permKind": kind, "items": list(lst)}))
-        hooks = (data or {}).get("hooks", {})
-        for event, entries in hooks.items():
-            cmds = [hk.get("command", "") for ent in (entries or [])
-                    for hk in (ent.get("hooks", []) or [])]
-            hook_cards.append(card(event, [("matchers", len(entries or []))], badge="hook",
-                                   edit={"kind": "hook", "event": event, "items": cmds}))
+    perm_cards = _perm_cards(cs)
+    hook_cards = _hook_cards(cs)
     add({"title": f"Permissions · {len(perm_cards)}", "source": cs, "cards": perm_cards})
     add({"title": f"Hooks · {len(hook_cards)}", "source": cs, "cards": hook_cards})
 
-    # 5) Code Skills (.trash 등 숨김 디렉토리 제외, 카드 단위 제거 + add 카드)
-    cards = []
+    # 5) Code Skills
     sd = found.get("skills_dir")
-    if sd and os.path.isdir(sd):
-        for name in sorted(os.listdir(sd)):
-            if name.startswith("."):
-                continue
-            full = os.path.join(sd, name)
-            if os.path.isdir(full):
-                has_md = os.path.exists(os.path.join(full, "SKILL.md"))
-                meta = read_frontmatter(os.path.join(full, "SKILL.md")) if has_md else {}
-                cards.append(card(name, [("desc", meta.get("description", "-")), ("path", full)],
-                                  badge="SKILL.md" if has_md else "no md", ok=has_md,
-                                  edit={"kind": "skill", "name": name}))
-        cards.append(card("＋ 새 스킬", [("형식", "name 설명…")],
-                          badge="add", edit={"kind": "skill-add"}))
-    add({"title": f"Skills (code) · {len(cards)}", "source": sd, "cards": cards})
+    skill_cards = _skill_cards(sd)
+    add({"title": f"Skills (code) · {len(skill_cards)}", "source": sd, "cards": skill_cards})
 
-    # 6) Agents (.trash 제외, 카드 단위 제거 + add 카드)
-    cards = []
+    # 6) Agents
     ad = found.get("agents_dir")
-    if ad and os.path.isdir(ad):
-        for name in sorted(os.listdir(ad)):
-            if name.startswith("."):
-                continue
-            full = os.path.join(ad, name)
-            md = full if name.endswith(".md") else os.path.join(full, "AGENT.md")
-            meta = read_frontmatter(md) if os.path.exists(md) else {}
-            # 제거 op 는 파일시스템 이름 기준(.md 제거) — frontmatter name 과 다를 수 있음
-            fs_name = name[:-3] if name.endswith(".md") else name
-            cards.append(card(meta.get("name", name), [
-                ("desc", meta.get("description", "-")),
-                ("tools", meta.get("tools", "-")),
-                ("path", full),
-            ], badge="agent", edit={"kind": "agent", "name": fs_name}))
-        cards.append(card("＋ 새 에이전트", [("형식", "name 설명…")],
-                          badge="add", edit={"kind": "agent-add"}))
-    add({"title": f"Agents · {len(cards)}", "source": ad, "cards": cards})
+    agent_cards = _agent_cards(ad)
+    add({"title": f"Agents · {len(agent_cards)}", "source": ad, "cards": agent_cards})
 
     # 7) Scheduled tasks
     cards = []
@@ -276,6 +339,8 @@ def parse(found):
     src = (f"{mans[0]}  (+{len(mans)-1} more)" if mans and len(mans) > 1 else (mans[0] if mans else None))
     add({"title": f"Desktop Skills · user {n_user} / anthropic {len(items)-n_user}", "source": src, "cards": cards})
 
+    if project_dirs:
+        _append_project_cards(state["sections"], project_dirs)
     return state
 
 HTML_TEMPLATE = """<!DOCTYPE html>
@@ -339,17 +404,21 @@ def main():
     for name in ("discover", "dump", "report"):
         sp = sub.add_parser(name)
         sp.add_argument("--paths", nargs="*", help="key=path 로 후보 직접 지정")
+        if name in ("dump", "report"):
+            sp.add_argument("--projects", nargs="*", default=None,
+                            help="프로젝트 .claude 디렉토리들 - 각각의 permissions/hooks/skills/agents 를 프로젝트 항목으로 추가")
         if name == "report":
             sp.add_argument("-o", "--out", default="claude-status.html")
     args = ap.parse_args()
     found = discover(getattr(args, "paths", None))
+    projects = getattr(args, "projects", None)
 
     if args.cmd == "discover":
         print(json.dumps(found, ensure_ascii=False, indent=2))
     elif args.cmd == "dump":
-        print(json.dumps(parse(found), ensure_ascii=False, indent=2))
+        print(json.dumps(parse(found, projects), ensure_ascii=False, indent=2))
     elif args.cmd == "report":
-        state = parse(found)
+        state = parse(found, projects)
         with open(args.out, "w", encoding="utf-8") as f:
             f.write(make_html(state))
         print(f"리포트 생성: {os.path.abspath(args.out)}")

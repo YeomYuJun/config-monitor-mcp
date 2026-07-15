@@ -30,6 +30,7 @@ const I18N: Record<string, Record<string, string>> = {
     watcherOn: "watcher 실행 중", watcherOff: "watcher 정지",
     trackedFiles: "추적 파일", clickHint: "클릭 → 이력 / diff",
     kindGlobal: "전역", kindProject: "프로젝트",
+    scopeAll: "전체", shadowed: "프로젝트에서 재정의됨", shadowedTip: "동일 이름의 프로젝트 항목이 우선 적용됨 · ",
     trackPathPlaceholder: "프로젝트 폴더 / .claude / 설정 파일 경로",
     trackAdd: "추적 추가", trackNone: "추적할 설정 파일을 찾지 못함", trackAlready: "이미 추적 중",
     untrack: "추적 해제", untracked: "추적 해제됨", untrackConfirm: "해제확정",
@@ -65,8 +66,8 @@ const I18N: Record<string, Record<string, string>> = {
     libEnvHint: "환경변수(CLAUDE_CONFIG_LIBRARIES)로 지정되어 대시보드에서 제거 불가",
     libInstallSelected: "선택 설치", libInstallGroup: "그룹 설치", libInstallGroupConfirm: "그룹 설치 확정",
     libInstallGroupHint: "이 그룹의 미설치 스킬 전체 설치", libAllInstalled: "이미 전부 설치됨",
-    installTarget: "설치 대상", targetGlobal: "전역 (~/.claude)", projPathPh: "프로젝트 경로", rootItems: "루트 항목 · 폴더 없음",
-    toastGroup: "그룹 설치 완료", toastSel: "선택 설치 완료", toastTarget: "설치 대상 추가됨", cntUnit: "개",
+    installTarget: "설치 대상", targetGlobal: "전역 (~/.claude)", rootItems: "루트 항목 · 폴더 없음",
+    toastGroup: "그룹 설치 완료", toastSel: "선택 설치 완료", cntUnit: "개",
   },
   en: {
     newFile: "New", modified: "Modified", deleted: "Deleted", unchanged: "Same",
@@ -76,6 +77,7 @@ const I18N: Record<string, Record<string, string>> = {
     watcherOn: "watcher running", watcherOff: "watcher stopped",
     trackedFiles: "Tracked files", clickHint: "click → history / diff",
     kindGlobal: "Global", kindProject: "Project",
+    scopeAll: "All", shadowed: "overridden by project", shadowedTip: "A same-named project item takes precedence · ",
     trackPathPlaceholder: "Project folder / .claude / config file path",
     trackAdd: "Track", trackNone: "No config files found to track", trackAlready: "Already tracked",
     untrack: "Untrack", untracked: "Untracked", untrackConfirm: "Confirm",
@@ -111,8 +113,8 @@ const I18N: Record<string, Record<string, string>> = {
     libEnvHint: "Set via CLAUDE_CONFIG_LIBRARIES env; can't be removed from the dashboard",
     libInstallSelected: "Install selected", libInstallGroup: "Install group", libInstallGroupConfirm: "Confirm install",
     libInstallGroupHint: "Install all not-installed skills in this group", libAllInstalled: "All already installed",
-    installTarget: "Install to", targetGlobal: "Global (~/.claude)", projPathPh: "Project path", rootItems: "root items · no folder",
-    toastGroup: "Group install done", toastSel: "Selected install done", toastTarget: "Install target added", cntUnit: "",
+    installTarget: "Install to", targetGlobal: "Global (~/.claude)", rootItems: "root items · no folder",
+    toastGroup: "Group install done", toastSel: "Selected install done", cntUnit: "",
   },
 };
 
@@ -161,9 +163,12 @@ let collapsedInit = false;                    // 기본 접힘 1회만 적용
 const libGroupOpen = new Set<string>();      // 펼친 라이브러리 스킬 그룹 경로(기본 접힘)
 const libChecked = new Set<string>();        // 선택 설치용 체크된 항목 key(카테고리 무관)
 const libOpen = new Set<string>(["skills"]); // 펼친 카테고리(기본 Skills 만, 데모와 동일)
-const libTargetPaths: string[] = [];         // 설치 대상 바에 수동 추가된 대상 루트(refresh 후에도 유지)
+let libProjectTargets: string[] = [];        // 설치 대상 후보(추적 중인 프로젝트 .claude 경로들). renderTracked 가 매 새로고침 갱신
 let libTargetSel = "";                        // 선택된 설치 대상 루트("" = 전역 ~/.claude)
 let libSelBarUpdate: (() => void) | null = null; // 체크박스 -> 상단 "선택 설치 (N)" 카운트 갱신 훅
+let scopeFilter = "all";                      // 설정 스코프 필터: 'all' | 'global' | <projectPath>
+const srcOpen: Record<string, boolean> = {};  // 출처 그룹 접힘 상태(키: `${secTitle}::g` | `${secTitle}::${project}`)
+let lastConfigSections: any[] = [];           // 스코프 칩/그룹 즉시 재렌더용 최신 섹션 캐시
 
 let toastT: number | undefined;
 function flashToast(msg: string): void {
@@ -238,6 +243,14 @@ function renderTracked(status: any): number {
   for (const st of ["modified", "new", "deleted", "unchanged"]) {
     for (const p of status[st] || []) rows.push([p, st]);
   }
+  // 설치 대상 후보 = 추적 중인 프로젝트(전역 아님, 삭제 아님)의 .claude 폴더. 라이브러리 설치 대상 select 옵션으로 노출.
+  const seenT = new Set<string>();
+  libProjectTargets = [];
+  for (const [p, st] of rows) {
+    if (st === "deleted" || defaults.has(p)) continue;
+    const d = dirname(p);
+    if (basename(d).toLowerCase() === ".claude" && !seenT.has(d)) { seenT.add(d); libProjectTargets.push(d); }
+  }
   if (!rows.length) {
     list.innerHTML = `<div class="empty">${esc(t("emptyTracked"))}</div>`;
   }
@@ -267,61 +280,178 @@ function renderTracked(status: any): number {
 }
 
 // ----- config sections (collapsible, with source) -----
+// 스코프 필터/출처 그룹/재정의 배지 지원. 설정 섹션은 #config 안의 #cfg-scoped 래퍼에 렌더.
+// Library 섹션은 래퍼 밖 #config 에 append 되므로 칩/그룹 즉시 재렌더가 Library 를 지우지 않는다.
 function renderConfig(sections: any[]): void {
   const host = $("config");
-  host.innerHTML = "";
-  secTitles.clear();
+  lastConfigSections = sections;
+  let wrap = document.getElementById("cfg-scoped") as HTMLElement | null;
+  const freshMount = !wrap;
+  if (freshMount) {
+    host.innerHTML = "";
+    wrap = document.createElement("div");
+    wrap.id = "cfg-scoped";
+    host.appendChild(wrap);
+    secTitles.clear();   // 전체 새로고침 때만 초기화(재렌더 시엔 Library 타이틀 보존)
+  } else {
+    wrap!.innerHTML = "";
+  }
+  const w = wrap!;
   if (!collapsedInit) {
     for (const sec of sections) {
       if (/^(Skills|Agents|Scheduled|Desktop)/.test(sec.title)) collapsed.add(sec.title);
     }
     collapsedInit = true;
   }
-  for (const sec of sections) {
-    secTitles.add(sec.title);
-    const isCol = collapsed.has(sec.title);
-    const secEl = document.createElement("div");
-    secEl.className = "sec" + (isCol ? " collapsed" : "");
-    secEl.dataset.col = "1";
-
-    const head = document.createElement("div");
-    head.className = "sechead";
-    const srcHtml = sec.source
-      ? `<div class="secsrc"><span class="lbl">${esc(t("source"))}</span><span class="val">${esc(sec.source)}</span></div>`
-      : "";
-    head.innerHTML =
-      `<div class="secrow"><span class="chev2">▾</span>` +
-      `<span class="sectitle">${esc(sec.title)}</span>` +
-      `<span class="seccount">${(sec.cards || []).length}</span></div>` + srcHtml;
-    head.addEventListener("click", () => {
-      if (collapsed.has(sec.title)) collapsed.delete(sec.title); else collapsed.add(sec.title);
-      secEl.classList.toggle("collapsed");
-    });
-    secEl.appendChild(head);
-
-    const body = document.createElement("div");
-    body.className = "secbody";
-    if (!(sec.cards || []).length) {
-      body.innerHTML = `<div class="empty">${esc(t("emptyCards"))}</div>`;
-    }
-    for (const c of sec.cards || []) {
-      const card = document.createElement("div");
-      card.className = "card";
-      card.innerHTML =
-        `<div class="cname"><span class="nm">${esc(c.name)}</span>` +
-        (c.badge ? `<span class="badge ${c.ok ? "ok" : ""}">${esc(c.badge)}</span>` : "") +
-        `</div>` +
-        (c.kv || [])
-          .map(([k, v]: [string, string]) =>
-            `<div class="kv"><span class="k">${esc(k)}</span>` +
-            `<span class="v ${valClass(k)}">${esc(v)}</span></div>`)
-          .join("");
-      if (c.edit) card.appendChild(buildEditUI(c.edit));
-      body.appendChild(card);
-    }
-    secEl.appendChild(body);
-    host.appendChild(secEl);
+  // 스캔 결과의 distinct 프로젝트 경로(등장 순), 칩/필터의 유일 원천(카드 project 값과 동일 소스).
+  const projects: string[] = [];
+  const projSeen = new Set<string>();
+  for (const sec of sections) for (const c of sec.cards || []) {
+    if (c.scope === "project" && c.project && !projSeen.has(c.project)) { projSeen.add(c.project); projects.push(c.project); }
   }
+  if (scopeFilter !== "all" && scopeFilter !== "global" && !projSeen.has(scopeFilter)) scopeFilter = "all";
+  if (projects.length) w.appendChild(buildScopeChips(projects));
+  for (const sec of sections) renderConfigSection(w, sec);
+}
+
+// 스코프 필터 칩: 전체 / 전역 / 프로젝트별. 클릭 시 캐시 섹션으로 즉시 재렌더(서버 왕복 없음).
+// TODO: 프로젝트가 수십 개가 되면 이 칩 행을 검색형 select 로 교체.
+function buildScopeChips(projects: string[]): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "scopechips";
+  const mk = (val: string, label: string, title?: string): HTMLElement => {
+    const chip = document.createElement("button");
+    chip.className = "scopechip" + (scopeFilter === val ? " on" : "");
+    chip.textContent = label;
+    if (title) chip.title = title;
+    chip.addEventListener("click", () => { scopeFilter = val; renderConfig(lastConfigSections); });
+    return chip;
+  };
+  row.appendChild(mk("all", t("scopeAll")));
+  row.appendChild(mk("global", t("kindGlobal")));
+  for (const p of projects) row.appendChild(mk(p, basename(p), p));
+  return row;
+}
+
+const isAddCard = (c: any): boolean => !!(c.edit && String(c.edit.kind || "").endsWith("-add"));
+
+// 카드 1개 렌더. shadowMap 있으면 shadowable 섹션의 전역 카드(add 카드 제외)에 재정의 배지+점선.
+function renderConfigCard(c: any, shadowMap: Map<string, string[]> | null): HTMLElement {
+  const card = document.createElement("div");
+  card.className = "card";
+  const shadowedBy = (shadowMap && c.scope !== "project" && !isAddCard(c)) ? shadowMap.get(c.name) : undefined;
+  let shadowBadge = "";
+  if (shadowedBy && shadowedBy.length) {
+    card.classList.add("shadowed");
+    card.title = t("shadowedTip") + shadowedBy.join(" · ");
+    const suffix = shadowedBy.length > 1 ? ` ×${shadowedBy.length}` : "";
+    shadowBadge = `<span class="shbadge">${esc(t("shadowed"))}${suffix}</span>`;
+  }
+  card.innerHTML =
+    `<div class="cname"><span class="nm">${esc(c.name)}</span>` +
+    `<span class="cbadges">${shadowBadge}` +
+    (c.badge ? `<span class="badge ${c.ok ? "ok" : ""}">${esc(c.badge)}</span>` : "") +
+    `</span></div>` +
+    (c.kv || [])
+      .map(([k, v]: [string, string]) =>
+        `<div class="kv"><span class="k">${esc(k)}</span>` +
+        `<span class="v ${valClass(k)}">${esc(v)}</span></div>`)
+      .join("");
+  if (c.edit) card.appendChild(buildEditUI(c.edit));
+  return card;
+}
+
+// 출처 그룹 헤더(카드 그리드 full-width 행). 클릭 시 그룹 접기/펼치기(로컬 srcOpen) 후 재렌더.
+function buildSrcGroupHeader(sec: any, isGlobal: boolean, project: string, count: number): HTMLElement {
+  const key = `${sec.title}::${isGlobal ? "g" : project}`;
+  const open = (key in srcOpen) ? srcOpen[key] : isGlobal;   // 기본: 전역 열림, 프로젝트 접힘
+  const head = document.createElement("div");
+  head.className = "srcgrp" + (open ? "" : " collapsed");
+  const pathTxt = isGlobal ? (sec.source || "") : project;
+  head.innerHTML =
+    `<span class="chev2">▾</span>` +
+    `<span class="scopepill ${isGlobal ? "global" : "project"}">${esc(isGlobal ? t("kindGlobal") : t("kindProject"))}</span>` +
+    `<span class="srcpath">${esc(pathTxt)}</span>` +
+    `<span class="srccount">${count}</span><span class="srcline"></span>`;
+  head.addEventListener("click", () => { srcOpen[key] = !open; renderConfig(lastConfigSections); });
+  return head;
+}
+
+function renderConfigSection(host: HTMLElement, sec: any): void {
+  const cards = sec.cards || [];
+  const hasProject = cards.some((c: any) => c.scope === "project");
+  const visible = cards.filter((c: any) =>
+    scopeFilter === "all" ? true
+      : scopeFilter === "global" ? c.scope !== "project"
+        : (c.scope === "project" && c.project === scopeFilter));
+  // 필터 모드에서 결과 0개 섹션은 통째로 스킵. 전체 모드는 항상 렌더.
+  if (scopeFilter !== "all" && !visible.length) return;
+
+  secTitles.add(sec.title);
+  const secEl = document.createElement("div");
+  secEl.className = "sec" + (collapsed.has(sec.title) ? " collapsed" : "");
+  secEl.dataset.col = "1";
+
+  const gCount = cards.filter((c: any) => c.scope !== "project").length;
+  const pCount = cards.length - gCount;
+  const summary = (scopeFilter === "all" && pCount)
+    ? `<span class="secsum">${esc(t("kindGlobal"))} ${gCount} · ${esc(t("kindProject"))} ${pCount}</span>` : "";
+  const srcHtml = sec.source
+    ? `<div class="secsrc"><span class="lbl">${esc(t("source"))}</span><span class="val">${esc(sec.source)}</span></div>`
+    : "";
+  const head = document.createElement("div");
+  head.className = "sechead";
+  head.innerHTML =
+    `<div class="secrow"><span class="chev2">▾</span>` +
+    `<span class="sectitle">${esc(sec.title)}</span>` +
+    `<span class="seccount">${visible.length}</span>${summary}</div>` + srcHtml;
+  head.addEventListener("click", () => {
+    if (collapsed.has(sec.title)) collapsed.delete(sec.title); else collapsed.add(sec.title);
+    secEl.classList.toggle("collapsed");
+  });
+  secEl.appendChild(head);
+
+  const body = document.createElement("div");
+  body.className = "secbody";
+  // 재정의 맵(Agents/Skills 만): 이름 -> [프로젝트...]. 필터 무관 전체 프로젝트 카드 기준.
+  const shadowable = /^(Agents|Skills)/.test(sec.title);
+  let shadowMap: Map<string, string[]> | null = null;
+  if (shadowable && hasProject) {
+    shadowMap = new Map();
+    for (const c of cards) if (c.scope === "project") {
+      const arr = shadowMap.get(c.name) || [];
+      arr.push(c.project);
+      shadowMap.set(c.name, arr);
+    }
+  }
+
+  if (scopeFilter === "all" && hasProject) {
+    // 그룹 모드: 전역 그룹 + 프로젝트 그룹들(등장 순). 접힌 그룹은 카드 렌더 스킵(DOM 제외).
+    const globalCards = cards.filter((c: any) => c.scope !== "project");
+    const gKey = `${sec.title}::g`;
+    body.appendChild(buildSrcGroupHeader(sec, true, "", globalCards.length));
+    if ((gKey in srcOpen) ? srcOpen[gKey] : true) {
+      for (const c of globalCards) body.appendChild(renderConfigCard(c, shadowMap));
+    }
+    const projGroups = new Map<string, any[]>();
+    for (const c of cards) if (c.scope === "project") {
+      const arr = projGroups.get(c.project) || [];
+      arr.push(c); projGroups.set(c.project, arr);
+    }
+    for (const [proj, pcards] of projGroups) {
+      const pKey = `${sec.title}::${proj}`;
+      body.appendChild(buildSrcGroupHeader(sec, false, proj, pcards.length));
+      if ((pKey in srcOpen) ? srcOpen[pKey] : false) {
+        for (const c of pcards) body.appendChild(renderConfigCard(c, shadowMap));
+      }
+    }
+  } else {
+    // 평면 모드(전체+프로젝트 없음, 또는 필터 모드): 그룹 헤더 없이 카드만.
+    if (!visible.length) body.innerHTML = `<div class="empty">${esc(t("emptyCards"))}</div>`;
+    for (const c of visible) body.appendChild(renderConfigCard(c, shadowMap));
+  }
+  secEl.appendChild(body);
+  host.appendChild(secEl);
 }
 
 // inline edit controls. edit meta is set by claude_config.py.
@@ -333,14 +463,15 @@ function buildEditUI(edit: any): HTMLElement {
   if (["mcp", "skill", "agent"].includes(edit.kind)) return buildRemoveUI(edit);
   if (["mcp-add", "skill-add", "agent-add"].includes(edit.kind)) return buildAddUI(edit);
   const isPerm = edit.kind === "perm";
+  const tgt = edit.settings ? { settings: edit.settings } : {};   // 프로젝트 카드면 그 프로젝트 settings 파일 대상
   const doRemove = (it: string) =>
     isPerm
-      ? callTool("config_perm_remove", { kind: edit.permKind, rule: it })
-      : callTool("config_hook_remove", { event: edit.event, needle: it });
+      ? callTool("config_perm_remove", { kind: edit.permKind, rule: it, ...tgt })
+      : callTool("config_hook_remove", { event: edit.event, needle: it, ...tgt });
   const doAdd = (v: string) =>
     isPerm
-      ? callTool("config_perm_add", { kind: edit.permKind, rule: v })
-      : callTool("config_hook_add", { event: edit.event, command: v });
+      ? callTool("config_perm_add", { kind: edit.permKind, rule: v, ...tgt })
+      : callTool("config_hook_add", { event: edit.event, command: v, ...tgt });
 
   const wrap = document.createElement("div");
   wrap.className = "edit";
@@ -679,8 +810,9 @@ function renderCategory(cat: string, items: any[], title: string, hint: string):
   return wrap;
 }
 
-// 설치 대상 바(Library 본문 최상단): [설치 대상] [대상 select] [경로 input] [선택 설치 (N)].
-// 대상 select 는 "전역(~/.claude)" + 사용자가 입력행에서 Enter 로 추가한 대상들. 선택 설치는 체크된 전 카테고리 항목을 대상으로 설치.
+// 설치 대상 바(Library 본문 최상단): [설치 대상] [대상 select] ......... [선택 설치 (N)].
+// 대상 select 옵션 = "전역(~/.claude)" + 추적 중인 프로젝트 .claude 경로들(libProjectTargets).
+// 임의 경로 입력은 제거: 추적되지 않는 경로는 다시 지울 방법이 없어 추적 대상만 노출한다.
 function buildTargetBar(allItems: any[]): HTMLElement {
   const bar = document.createElement("div");
   bar.className = "libtbar";
@@ -688,26 +820,13 @@ function buildTargetBar(allItems: any[]): HTMLElement {
   lbl.className = "tlbl";
   lbl.textContent = t("installTarget");
   const sel = document.createElement("select");
-  const fillSel = () => {
-    sel.innerHTML =
-      `<option value="">${esc(t("targetGlobal"))}</option>` +
-      libTargetPaths.map((p) => `<option value="${esc(p)}">${esc(p)}</option>`).join("");
-    sel.value = libTargetSel;
-  };
-  fillSel();
+  // 선택돼 있던 대상이 목록에서 사라졌으면(추적 해제) 전역으로 리셋.
+  if (libTargetSel && !libProjectTargets.includes(libTargetSel)) libTargetSel = "";
+  sel.innerHTML =
+    `<option value="">${esc(t("targetGlobal"))}</option>` +
+    libProjectTargets.map((p) => `<option value="${esc(p)}">${esc(p)}</option>`).join("");
+  sel.value = libTargetSel;
   sel.addEventListener("change", () => { libTargetSel = sel.value; });
-  const input = document.createElement("input");
-  input.placeholder = t("projPathPh");
-  input.addEventListener("keydown", (e) => {
-    if ((e as KeyboardEvent).key !== "Enter") return;
-    const v = input.value.trim();
-    if (!v) return;
-    if (!libTargetPaths.includes(v)) libTargetPaths.push(v);
-    libTargetSel = v;
-    fillSel();
-    input.value = "";
-    flashToast(`${t("toastTarget")} · ${v}`);
-  });
   const selBtn = document.createElement("button");
   selBtn.className = "addbtn selbtn";
   const update = () => {
@@ -723,7 +842,7 @@ function buildTargetBar(allItems: any[]): HTMLElement {
     if (!chosen.length) return;
     await installMany(chosen, { target: libTargetSel || undefined, done: (n) => `${t("toastSel")} · ${n}${t("cntUnit")}` });
   });
-  bar.append(lbl, sel, input, selBtn);
+  bar.append(lbl, sel, selBtn);
   return bar;
 }
 
@@ -757,7 +876,7 @@ function renderLibrary(host: HTMLElement, res: any): void {
   secEl.appendChild(head);
 
   const body = document.createElement("div");
-  body.className = "secbody";
+  body.className = "secbody libbody";  // libbody: 카테고리 토글이 세로로 쌓이도록 그리드 해제
   // 미등록(라이브러리 0개)이라도 섹션 구조는 동일하게: 카테고리 자리에 "라이브러리 항목 없음" + 하단 경로 카드.
   if (!libs.length) {
     body.innerHTML = `<div class="empty">${esc(t("libEmpty"))}</div>`;
@@ -1032,7 +1151,8 @@ async function refresh(): Promise<void> {
     showErr("tracked", t("trackedStatus"), e);
   }
   try {
-    const cfg = jparse(await callTool("get_config"));
+    // libProjectTargets(추적 프로젝트 .claude 경로들)는 앞선 renderTracked 에서 채워짐 -> 프로젝트 스코프 설정 포함.
+    const cfg = jparse(await callTool("get_config", { projects: libProjectTargets }));
     if (cfg) {
       renderConfig(cfg.sections || []);
       // settingsHint 앞자리 숫자만 실제 카테고리 수로 치환해 라이브 카운트 유지.

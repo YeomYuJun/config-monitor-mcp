@@ -33,8 +33,8 @@
   .app.fullscreen{height:100vh}
   /* 전체화면에서는 호스트 프롬프트 입력창이 iframe 하단에 겹쳐 마지막 콘텐츠를 가린다.
      스크롤 컨테이너 하단 여백을 늘려 위로 스크롤하면 가려지지 않도록 한다(인라인 위젯은 그대로). */
-  .app.fullscreen .left{padding-bottom:96px}
-  .app.fullscreen .detail{padding-bottom:104px}
+  .app.fullscreen .left{padding-bottom:116px}
+  .app.fullscreen .detail{padding-bottom:124px}
 
   /* header */
   header{display:flex;align-items:center;gap:18px;padding:12px 22px;border-bottom:1px solid var(--line);
@@ -104,7 +104,7 @@
   .file .kind.kproject{background:#EFF4FF;color:var(--accent);border-color:#CFE0FF}
   /* 프로젝트 행 추적 해제(×) 버튼 */
   .file .untrackbtn{flex:0 0 auto;border:1px solid var(--line2);background:var(--panel);color:var(--mut2);
-    width:22px;height:22px;border-radius:5px;font-size:14px;line-height:1;cursor:pointer;padding:0}
+    min-width:22px;height:22px;border-radius:5px;font-size:13px;line-height:1;cursor:pointer;padding:0 8px;white-space:nowrap}
   .file .untrackbtn:hover{border-color:var(--del);color:var(--del);background:var(--delbg)}
 
   /* config sections (collapsible) */
@@ -124,6 +124,32 @@
   .secbody{background:var(--panel2);border-top:1px solid #D6DAE1;padding:12px 13px;
     display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px;align-items:start}
   .sec.collapsed .secbody{display:none}
+  /* Library 본문은 카테고리 토글이 세로로 쌓여야 하므로 그리드 대신 단일 컬럼 블록. */
+  .secbody.libbody{display:block}
+
+  /* config: 스코프 필터 칩 + 출처 그룹 헤더(전역/프로젝트) + 재정의 배지 */
+  .scopechips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+  .scopechip{border:1px solid #D1D6DE;background:#FFF;color:#5A6069;border-radius:999px;padding:4px 12px;
+    font-family:var(--mono);font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap}
+  .scopechip:hover{border-color:#B9C0CA}
+  .scopechip.on{border-color:var(--accent);background:var(--accent);color:#FFF}
+  .secsum{font-family:var(--mono);font-size:11px;color:#6B7077;margin-left:8px}
+  .srcgrp{grid-column:1/-1;display:flex;align-items:center;gap:8px;padding:5px 4px;border-radius:5px;
+    cursor:pointer;user-select:none}
+  .srcgrp:hover{background:rgba(255,255,255,.65)}
+  .srcgrp .chev2{transition:transform .15s;color:var(--mut2);font-size:10px;flex:0 0 auto}
+  .srcgrp.collapsed .chev2{transform:rotate(-90deg)}
+  .srcgrp .srcpath{font-family:var(--mono);font-size:11px;color:#6B7077;word-break:break-all}
+  .srcgrp .srccount{font-family:var(--mono);font-size:10.5px;color:var(--mut);background:#DDE1E8;
+    padding:1px 7px;border-radius:4px;flex:0 0 auto}
+  .srcgrp .srcline{flex:1;height:1px;background:#D3D8E1;min-width:8px}
+  .scopepill{font-size:10.5px;font-weight:600;padding:2px 8px;border-radius:4px;flex:0 0 auto;white-space:nowrap}
+  .scopepill.global{background:#FFF;border:1px solid #D3D8E0;color:#5A6069}
+  .scopepill.project{background:rgba(43,92,230,.14);border:1px solid rgba(43,92,230,.4);color:var(--accent)}
+  .cname .cbadges{display:flex;align-items:center;gap:5px;flex:0 0 auto}
+  .card.shadowed{border:1px dashed #C9CFD8;background:#FBFBFC}
+  .shbadge{background:rgba(180,83,9,.11);color:#B45309;font-size:10px;font-weight:600;padding:2px 7px;
+    border-radius:4px;white-space:nowrap}
 
   .card{background:var(--panel);border:1px solid var(--line2);border-radius:6px;padding:12px 13px;
     box-shadow:0 1px 2px rgba(20,24,34,.05)}
@@ -158,7 +184,7 @@
     font-family:var(--mono);font-size:11.5px;color:var(--fg2);max-width:210px}
   .libtbar input{flex:1;min-width:120px;padding:6px 9px;border:1px solid var(--line2);border-radius:6px;
     font-family:var(--mono);font-size:11.5px}
-  .libtbar .selbtn{flex:0 0 auto}
+  .libtbar .selbtn{flex:0 0 auto;margin-left:auto}
 
   .libcat{border:1px solid var(--line2);border-radius:7px;background:#F6F7FA;margin-bottom:8px;overflow:hidden}
   .libcathead{display:flex;align-items:center;gap:9px;padding:9px 12px;cursor:pointer;user-select:none}

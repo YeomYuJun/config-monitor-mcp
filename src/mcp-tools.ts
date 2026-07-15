@@ -61,10 +61,16 @@ export function buildTools(scriptDir: string): ToolDef[] {
       name: "get_config",
       meta: {
         title: "Get Claude Config",
-        description: "Claude 설정(MCP/hooks/skills/agents/scheduled/permissions/desktop-skills)을 정규화된 sections JSON 으로 반환",
-        inputSchema: z.object({}), annotations: READ,
+        description: "Claude 설정(MCP/hooks/skills/agents/scheduled/permissions/desktop-skills)을 정규화된 sections JSON 으로 반환. projects 지정 시 각 프로젝트 .claude 의 permissions/hooks/skills/agents 를 프로젝트 항목으로 함께 반환",
+        inputSchema: z.object({
+          projects: z.array(z.string()).optional().describe("프로젝트 .claude 디렉토리들(추적 중인 프로젝트). 각 항목의 설정을 프로젝트 스코프로 추가"),
+        }), annotations: READ,
       },
-      run: async () => jsonResult(await runPy("claude_config.py", ["dump"])),
+      run: async (a: { projects?: string[] }) => {
+        const args = ["dump"];
+        if (a.projects && a.projects.length) args.push("--projects", ...a.projects);
+        return jsonResult(await runPy("claude_config.py", args));
+      },
     },
     {
       name: "get_tracked",
@@ -221,29 +227,39 @@ export function buildTools(scriptDir: string): ToolDef[] {
       name: "config_perm_add",
       meta: {
         title: "Add Permission Rule",
-        description: "settings.json permissions.<allow|deny|ask> 에 규칙 추가 (편집 전 스냅샷+백업)",
-        inputSchema: z.object({ kind: z.enum(["allow", "deny", "ask"]), rule: z.string() }), annotations: EDIT,
+        description: "settings.json permissions.<allow|deny|ask> 에 규칙 추가 (편집 전 스냅샷+백업). settings 지정 시 그 파일 대상(프로젝트 설정)",
+        inputSchema: z.object({ kind: z.enum(["allow", "deny", "ask"]), rule: z.string(), settings: z.string().optional() }), annotations: EDIT,
       },
-      run: async (a: { kind: string; rule: string }) => jsonResult(await runPy("config_edit.py", ["perm-add", a.kind, a.rule])),
+      run: async (a: { kind: string; rule: string; settings?: string }) => {
+        // --settings 는 부모 파서 옵션이라 subcommand 앞에 와야 argparse 가 인식.
+        const args = a.settings ? ["--settings", a.settings] : [];
+        args.push("perm-add", a.kind, a.rule);
+        return jsonResult(await runPy("config_edit.py", args));
+      },
     },
     {
       name: "config_perm_remove",
       meta: {
         title: "Remove Permission Rule",
-        description: "settings.json permissions 에서 규칙 제거",
-        inputSchema: z.object({ kind: z.enum(["allow", "deny", "ask"]), rule: z.string() }), annotations: EDIT,
+        description: "settings.json permissions 에서 규칙 제거. settings 지정 시 그 파일 대상(프로젝트 설정)",
+        inputSchema: z.object({ kind: z.enum(["allow", "deny", "ask"]), rule: z.string(), settings: z.string().optional() }), annotations: EDIT,
       },
-      run: async (a: { kind: string; rule: string }) => jsonResult(await runPy("config_edit.py", ["perm-remove", a.kind, a.rule])),
+      run: async (a: { kind: string; rule: string; settings?: string }) => {
+        const args = a.settings ? ["--settings", a.settings] : [];
+        args.push("perm-remove", a.kind, a.rule);
+        return jsonResult(await runPy("config_edit.py", args));
+      },
     },
     {
       name: "config_hook_add",
       meta: {
         title: "Add Hook",
-        description: "settings.json hooks.<event> 에 command hook 추가",
-        inputSchema: z.object({ event: z.string(), command: z.string(), matcher: z.string().optional() }), annotations: EDIT,
+        description: "settings.json hooks.<event> 에 command hook 추가. settings 지정 시 그 파일 대상(프로젝트 설정)",
+        inputSchema: z.object({ event: z.string(), command: z.string(), matcher: z.string().optional(), settings: z.string().optional() }), annotations: EDIT,
       },
-      run: async (a: { event: string; command: string; matcher?: string }) => {
-        const args = ["hook-add", a.event, a.command];
+      run: async (a: { event: string; command: string; matcher?: string; settings?: string }) => {
+        const args = a.settings ? ["--settings", a.settings] : [];
+        args.push("hook-add", a.event, a.command);
         if (a.matcher) args.push("--matcher", a.matcher);
         return jsonResult(await runPy("config_edit.py", args));
       },
@@ -252,10 +268,14 @@ export function buildTools(scriptDir: string): ToolDef[] {
       name: "config_hook_remove",
       meta: {
         title: "Remove Hook",
-        description: "settings.json hooks.<event> 에서 command substring 매칭 항목 제거",
-        inputSchema: z.object({ event: z.string(), needle: z.string() }), annotations: EDIT,
+        description: "settings.json hooks.<event> 에서 command substring 매칭 항목 제거. settings 지정 시 그 파일 대상(프로젝트 설정)",
+        inputSchema: z.object({ event: z.string(), needle: z.string(), settings: z.string().optional() }), annotations: EDIT,
       },
-      run: async (a: { event: string; needle: string }) => jsonResult(await runPy("config_edit.py", ["hook-remove", a.event, a.needle])),
+      run: async (a: { event: string; needle: string; settings?: string }) => {
+        const args = a.settings ? ["--settings", a.settings] : [];
+        args.push("hook-remove", a.event, a.needle);
+        return jsonResult(await runPy("config_edit.py", args));
+      },
     },
     {
       name: "skill_scaffold",

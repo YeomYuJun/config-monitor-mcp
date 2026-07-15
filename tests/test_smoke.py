@@ -511,6 +511,22 @@ class TrackProjectPreset(unittest.TestCase):
         allpaths = [p for k in ("new", "modified", "deleted", "unchanged") for p in st.get(k, [])]
         self.assertNotIn(self._nc(f), [self._nc(x) for x in allpaths])
 
+    def test_untrack_removes_deleted_from_index(self):
+        # 회귀: 스냅샷된(index 에 든) 프로젝트 파일을 삭제하면 status 는 deleted 로 잡는다.
+        # untrack 은 config 뿐 아니라 index 에서도 빼야 하며, 안 그러면 계속 deleted 로 남는다.
+        f = self._make(os.path.join(self.tmp, "repoF", ".claude", "settings.json"))
+        self.cas("track", "--json", f)
+        self.cas("snapshot")                      # index 에 등록
+        os.remove(f)                              # 파일 삭제 -> status = deleted
+        st = json.loads(self.cas("status", "--json")[1])
+        self.assertIn(self._nc(f), [self._nc(x) for x in st.get("deleted", [])])
+        r = json.loads(self.cas("untrack", "--json", f)[1])
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["index_removed"], 1)
+        st2 = json.loads(self.cas("status", "--json")[1])
+        allpaths = [p for k in ("new", "modified", "deleted", "unchanged") for p in st2.get(k, [])]
+        self.assertNotIn(self._nc(f), [self._nc(x) for x in allpaths])
+
     def test_status_defaults_classifies_global_vs_project(self):
         # fake HOME 의 ~/.claude.json 은 DEFAULT_TRACKED(전역)로 분류, 프로젝트 파일은 아님.
         fake_home = os.path.join(self.tmp, "home")

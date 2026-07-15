@@ -17,9 +17,11 @@ import argparse, json, os, re, sys, zlib, hashlib, glob as globmod, difflib
 from datetime import datetime
 
 # Windows 콘솔 기본 인코딩(cp949)에서 한글/em-dash 출력 시 UnicodeEncodeError 방지.
+# newline="" 필수: 기본 텍스트 모드는 쓰기 시 \n 을 \r\n 으로 바꾸는데, cat/diff 처럼
+# 파일 내용(이미 \r\n 일 수 있음)을 그대로 내보내면 \r\r\n 이 되어 개행이 2번으로 보인다.
 for _s in (sys.stdout, sys.stderr):
     try:
-        _s.reconfigure(encoding="utf-8")
+        _s.reconfigure(encoding="utf-8", newline="")
     except (AttributeError, ValueError):
         pass
 
@@ -233,11 +235,21 @@ def cmd_untrack(args):
     if ignored:
         config["ignore_defaults"] = sorted(ignored)
     save_json(p["config"], config)
+    # index 에서도 제거: status 의 'deleted' 는 index(스냅샷된 파일) 기준이라 tracked 에서 빠져도
+    # index 에 남아 있으면 계속 삭제됨 상태로 표시된다. 추적 해제 = index 에서도 완전 제외.
+    index = load_json(p["index"], {})
+    idx_removed = 0
+    for k in list(index):
+        if k in targets or os.path.abspath(os.path.expanduser(k)) in targets:
+            del index[k]
+            idx_removed += 1
+    if idx_removed:
+        save_json(p["index"], index)
     removed = before - len(config["tracked"])
     if getattr(args, "json", False):
-        print(json.dumps({"ok": True, "removed": removed}, ensure_ascii=False))
+        print(json.dumps({"ok": True, "removed": removed, "index_removed": idx_removed}, ensure_ascii=False))
     else:
-        print(f"제거됨: {removed}개")
+        print(f"제거됨: {removed}개 (index {idx_removed}개)")
 
 def cmd_status(args):
     p = store_paths(args.store)
