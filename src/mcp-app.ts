@@ -31,6 +31,7 @@ const I18N: Record<string, Record<string, string>> = {
     trackedFiles: "추적 파일", clickHint: "클릭 → 이력 / diff",
     kindGlobal: "전역", kindProject: "프로젝트",
     scopeAll: "전체", shadowed: "프로젝트에서 재정의됨", shadowedTip: "동일 이름의 프로젝트 항목이 우선 적용됨 · ",
+    shadowedByGlobal: "전역에 가려짐", shadowedByGlobalTip: "동일 이름의 전역 스킬이 우선 적용되어 이 항목은 사용되지 않음",
     trackPathPlaceholder: "프로젝트 폴더 / .claude / 설정 파일 경로",
     trackAdd: "추적 추가", trackNone: "추적할 설정 파일을 찾지 못함", trackAlready: "이미 추적 중",
     projPickOpen: "＋ 프로젝트에서 추가", projPickEmpty: ".claude 있는 프로젝트 없음", projPickTracked: "추적 중",
@@ -79,6 +80,7 @@ const I18N: Record<string, Record<string, string>> = {
     trackedFiles: "Tracked files", clickHint: "click → history / diff",
     kindGlobal: "Global", kindProject: "Project",
     scopeAll: "All", shadowed: "overridden by project", shadowedTip: "A same-named project item takes precedence · ",
+    shadowedByGlobal: "shadowed by personal", shadowedByGlobalTip: "A same-named personal skill takes precedence; this item is not used",
     trackPathPlaceholder: "Project folder / .claude / config file path",
     trackAdd: "Track", trackNone: "No config files found to track", trackAlready: "Already tracked",
     projPickOpen: "＋ Add from projects", projPickEmpty: "No projects with .claude", projPickTracked: "tracked",
@@ -383,17 +385,20 @@ function buildScopeChips(projects: string[]): HTMLElement {
 
 const isAddCard = (c: any): boolean => !!(c.edit && String(c.edit.kind || "").endsWith("-add"));
 
-// 카드 1개 렌더. shadowMap 있으면 shadowable 섹션의 전역 카드(add 카드 제외)에 재정의 배지+점선.
-function renderConfigCard(c: any, shadowMap: Map<string, string[]> | null): HTMLElement {
+// 이름 충돌로 실제 적용되지 않는 카드에 붙일 배지. 어느 쪽이 가려지는지는 섹션마다 다르므로
+// 호출부(renderConfigSection)가 판정해 넘긴다.
+interface Shadow { label: string; tip: string; }
+
+// 카드 1개 렌더. shadowOf 가 배지를 주면 점선+앰버 배지로 "이 항목은 적용 안 됨"을 표시.
+function renderConfigCard(c: any, shadowOf: ((c: any) => Shadow | null) | null): HTMLElement {
   const card = document.createElement("div");
   card.className = "card";
-  const shadowedBy = (shadowMap && c.scope !== "project" && !isAddCard(c)) ? shadowMap.get(c.name) : undefined;
+  const sh = shadowOf ? shadowOf(c) : null;
   let shadowBadge = "";
-  if (shadowedBy && shadowedBy.length) {
+  if (sh) {
     card.classList.add("shadowed");
-    card.title = t("shadowedTip") + shadowedBy.join(" · ");
-    const suffix = shadowedBy.length > 1 ? ` ×${shadowedBy.length}` : "";
-    shadowBadge = `<span class="shbadge">${esc(t("shadowed"))}${suffix}</span>`;
+    card.title = sh.tip;
+    shadowBadge = `<span class="shbadge">${esc(sh.label)}</span>`;
   }
   card.innerHTML =
     `<div class="cname"><span class="nm">${esc(c.name)}</span>` +
@@ -461,16 +466,32 @@ function renderConfigSection(host: HTMLElement, sec: any): void {
 
   const body = document.createElement("div");
   body.className = "secbody";
-  // 재정의 맵(Agents/Skills 만): 이름 -> [프로젝트...]. 필터 무관 전체 프로젝트 카드 기준.
-  const shadowable = /^(Agents|Skills)/.test(sec.title);
-  let shadowMap: Map<string, string[]> | null = null;
-  if (shadowable && hasProject) {
-    shadowMap = new Map();
-    for (const c of cards) if (c.scope === "project") {
-      const arr = shadowMap.get(c.name) || [];
-      arr.push(c.project);
-      shadowMap.set(c.name, arr);
+  // 이름 충돌 시 우선순위는 종류마다 반대다(Claude Code 문서 기준).
+  //   agents : .claude/agents(프로젝트)가 ~/.claude/agents(전역)를 덮어씀 -> 가려지는 쪽은 전역 카드
+  //   skills : personal(전역)이 project 를 덮어씀 -> 가려지는 쪽은 프로젝트 카드
+  // 판정은 필터와 무관하게 전체 카드 기준(전역 필터에서도 배지가 유지되어야 함).
+  let shadowOf: ((c: any) => Shadow | null) | null = null;
+  if (hasProject && /^Agents/.test(sec.title)) {
+    const byName = new Map<string, string[]>();
+    for (const c of cards) if (c.scope === "project" && c.project) {
+      byName.set(c.name, (byName.get(c.name) || []).concat(c.project));
     }
+    shadowOf = (c: any) => {
+      if (c.scope === "project" || isAddCard(c)) return null;
+      const ps = byName.get(c.name);
+      if (!ps || !ps.length) return null;
+      return {
+        label: t("shadowed") + (ps.length > 1 ? ` ×${ps.length}` : ""),
+        tip: t("shadowedTip") + ps.join(" · "),
+      };
+    };
+  } else if (hasProject && /^Skills/.test(sec.title)) {
+    const globalNames = new Set(cards.filter((c: any) => c.scope !== "project" && !isAddCard(c))
+                                     .map((c: any) => c.name));
+    shadowOf = (c: any) => {
+      if (c.scope !== "project" || !globalNames.has(c.name)) return null;
+      return { label: t("shadowedByGlobal"), tip: t("shadowedByGlobalTip") };
+    };
   }
 
   if (scopeFilter === "all" && hasProject) {
@@ -479,7 +500,7 @@ function renderConfigSection(host: HTMLElement, sec: any): void {
     const gKey = `${sec.title}::g`;
     body.appendChild(buildSrcGroupHeader(sec, true, "", globalCards.length));
     if ((gKey in srcOpen) ? srcOpen[gKey] : true) {
-      for (const c of globalCards) body.appendChild(renderConfigCard(c, shadowMap));
+      for (const c of globalCards) body.appendChild(renderConfigCard(c, shadowOf));
     }
     const projGroups = new Map<string, any[]>();
     for (const c of cards) if (c.scope === "project") {
@@ -490,13 +511,13 @@ function renderConfigSection(host: HTMLElement, sec: any): void {
       const pKey = `${sec.title}::${proj}`;
       body.appendChild(buildSrcGroupHeader(sec, false, proj, pcards.length));
       if ((pKey in srcOpen) ? srcOpen[pKey] : false) {
-        for (const c of pcards) body.appendChild(renderConfigCard(c, shadowMap));
+        for (const c of pcards) body.appendChild(renderConfigCard(c, shadowOf));
       }
     }
   } else {
     // 평면 모드(전체+프로젝트 없음, 또는 필터 모드): 그룹 헤더 없이 카드만.
     if (!visible.length) body.innerHTML = `<div class="empty">${esc(t("emptyCards"))}</div>`;
-    for (const c of visible) body.appendChild(renderConfigCard(c, shadowMap));
+    for (const c of visible) body.appendChild(renderConfigCard(c, shadowOf));
   }
   secEl.appendChild(body);
   host.appendChild(secEl);
