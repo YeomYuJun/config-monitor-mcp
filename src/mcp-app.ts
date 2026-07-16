@@ -330,8 +330,12 @@ function renderTracked(status: any): number {
 }
 
 // ----- config sections (collapsible, with source) -----
+// 섹션 표시 이름(제목에서 ' · <개수>' 를 뗀 앞부분). 개수가 바뀌어도 정렬이 흔들리지 않게.
+const secName = (title: string) => String(title).split(" · ")[0];
+
 // 스코프 필터/출처 그룹/재정의 배지 지원. 설정 섹션은 #config 안의 #cfg-scoped 래퍼에 렌더.
 // Library 섹션은 래퍼 밖 #config 에 append 되므로 칩/그룹 즉시 재렌더가 Library 를 지우지 않는다.
+// (Library 가 래퍼 밖이라 아래 이름순 정렬과 무관하게 항상 맨 밑에 남는다.)
 function renderConfig(sections: any[]): void {
   const host = $("config");
   lastConfigSections = sections;
@@ -361,7 +365,9 @@ function renderConfig(sections: any[]): void {
   }
   if (scopeFilter !== "all" && scopeFilter !== "global" && !projSeen.has(scopeFilter)) scopeFilter = "all";
   if (projects.length) w.appendChild(buildScopeChips(projects));
-  for (const sec of sections) renderConfigSection(w, sec);
+  // 표시 순서만 이름 A-Z(원본 배열은 그대로 - lastConfigSections 캐시를 건드리지 않는다).
+  const ordered = [...sections].sort((a, b) => secName(a.title).localeCompare(secName(b.title)));
+  for (const sec of ordered) renderConfigSection(w, sec);
 }
 
 // 스코프 필터 칩: 전체 / 전역 / 프로젝트별. 클릭 시 캐시 섹션으로 즉시 재렌더(서버 왕복 없음).
