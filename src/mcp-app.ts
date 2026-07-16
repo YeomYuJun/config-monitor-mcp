@@ -188,7 +188,8 @@ function flashToast(msg: string): void {
 const statusLabel = (st: string): string =>
   (({ new: t("newFile"), modified: t("modified"), deleted: t("deleted"), unchanged: t("unchanged") } as Record<string, string>)[st] || st);
 // 경로 추가 입력행: 프로젝트 폴더/.claude/파일 경로 -> config_track(프리셋 자동 감지).
-function buildTrackAdder(): HTMLElement {
+// extra = 입력/추가 버튼과 같은 행에 놓을 부가 버튼(프로젝트에서 추가 토글).
+function buildTrackAdder(extra?: HTMLElement): HTMLElement {
   const adder = document.createElement("div");
   adder.className = "adder";
   const input = document.createElement("input");
@@ -212,6 +213,7 @@ function buildTrackAdder(): HTMLElement {
   btn.addEventListener("click", submit);
   input.addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") submit(); });
   adder.append(input, btn);
+  if (extra) adder.appendChild(extra);
   return adder;
 }
 
@@ -237,9 +239,8 @@ function buildUntrackBtn(p: string): HTMLElement {
 
 // 프로젝트에서 추가: .claude.json 의 projects 중 .claude 있는 것을 원클릭 track(config_track).
 // 지연 로드(펼칠 때 list_projects 호출). 이미 추적 중인 프로젝트는 비활성 표시.
-function buildProjectPicker(): HTMLElement {
-  const wrap = document.createElement("div");
-  wrap.className = "projpick";
+// toggle 은 '추적 추가' 옆(.adder 행), list 는 그 아래 행에 놓이므로 호출측이 각각 배치한다.
+function buildProjectPicker(): { toggle: HTMLElement; list: HTMLElement } {
   const toggle = document.createElement("button");
   toggle.className = "projpicktoggle";
   toggle.textContent = t("projPickOpen");
@@ -249,6 +250,7 @@ function buildProjectPicker(): HTMLElement {
   let loaded = false;
   toggle.addEventListener("click", async () => {
     list.hidden = !list.hidden;
+    toggle.classList.toggle("on", !list.hidden);   // 열림 상태를 버튼에 반영(토글 버튼)
     if (list.hidden || loaded) return;
     loaded = true;
     list.innerHTML = `<div class="empty">${esc(t("loading"))}</div>`;
@@ -275,15 +277,16 @@ function buildProjectPicker(): HTMLElement {
       }
     } catch (e) { list.innerHTML = `<div class="empty">${esc(t("failed"))}</div>`; console.error("[config-monitor] list_projects", e); }
   });
-  wrap.append(toggle, list);
-  return wrap;
+  return { toggle, list };
 }
 
 function renderTracked(status: any): number {
   const host = $("tracked");
   host.innerHTML = "";
-  host.appendChild(buildTrackAdder());
-  host.appendChild(buildProjectPicker());
+  // 입력 + [추적 추가] + [프로젝트에서 추가] 가 한 행, 펼친 목록은 그 아래 행.
+  const picker = buildProjectPicker();
+  host.appendChild(buildTrackAdder(picker.toggle));
+  host.appendChild(picker.list);
   // status.defaults = 전역(기본 추적) 대상 경로 목록 -> 전역(editable) vs 프로젝트(view-only) 구분.
   const defaults = new Set<string>(Array.isArray(status.defaults) ? status.defaults : []);
   const list = document.createElement("div");

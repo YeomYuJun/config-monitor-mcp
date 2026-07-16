@@ -98,19 +98,23 @@
   .fbadge.new{background:var(--okbg);color:var(--ok)}
   .fbadge.deleted{background:var(--delbg);color:var(--del)}
   /* 프로젝트에서 추가(.claude.json projects -> 원클릭 track) */
-  .projpick{margin:2px 0 8px}
-  .projpicktoggle{width:100%;text-align:left;background:var(--panel);border:1px dashed var(--line2);
-    border-radius:6px;padding:7px 10px;font-size:12px;color:var(--mut2);cursor:pointer}
-  .projpicktoggle:hover{border-color:var(--accent);color:var(--accent)}
-  .projpicklist{display:flex;flex-direction:column;gap:5px;margin-top:6px}
+  #tracked{display:flex;flex-direction:column;gap:8px}
+  /* [hidden] 은 UA 규칙이라 작성자 display 선언에 밀린다 -> 목록 접기용으로 명시 필요. */
+  .projpicklist[hidden]{display:none}
+  .projpicklist{display:flex;flex-direction:column;gap:5px}
   .projpickrow{display:flex;align-items:center;gap:8px;text-align:left;background:var(--panel);
     border:1px solid var(--line2);border-radius:6px;padding:7px 10px;cursor:pointer}
   .projpickrow:hover:not(:disabled){border-color:var(--accent)}
-  .projpickrow:disabled{opacity:.55;cursor:default}
+  .projpickrow:disabled{cursor:default}
   .projpickrow .pnm{font-weight:600;font-size:12px;color:var(--fg);flex:0 0 auto}
   .projpickrow .ppath{font-family:var(--mono);font-size:11px;color:var(--mut2);flex:1;min-width:0;
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .projpickrow .ptag{font-size:10px;color:var(--ok);flex:0 0 auto}
+  /* 이미 추적 중: 눌러도 소용없는 행이므로 배경까지 눌러 앉히고 배지를 pill 로 세운다. */
+  .projpickrow.tracked{background:var(--panel2);border-color:var(--line)}
+  .projpickrow.tracked .pnm{color:var(--mut2);font-weight:500}
+  .projpickrow.tracked .ppath{color:var(--mut3)}
+  .projpickrow.tracked .ptag{background:var(--okbg);border-radius:20px;padding:2px 8px;font-weight:600}
   /* 전역(editable) vs 프로젝트(view-only) 구분 배지 */
   .file .kind{font-size:10px;font-weight:600;padding:1px 6px;border-radius:20px;white-space:nowrap;flex:0 0 auto;
     border:1px solid transparent}
@@ -247,13 +251,20 @@
   .libtargetinput{flex:1;min-width:140px;background:var(--panel);border:1px solid var(--line2);border-radius:5px;
     padding:5px 8px;font:11.5px var(--mono);color:var(--fg)}
   .libtargetinput:focus{border-color:var(--accent);outline:none}
+  /* 입력 + 버튼들이 한 행. 버튼은 stretch 로 입력 높이에 맞으므로 행 높이는 input 패딩이 정한다. */
   .adder{display:flex;gap:6px}
   .adder input{flex:1;min-width:0;background:#FBFBFC;border:1px solid var(--line2);border-radius:5px;
-    padding:5px 9px;font-family:var(--mono);font-size:11px;color:var(--fg);outline:none}
+    padding:8px 11px;font-family:var(--mono);font-size:11px;color:var(--fg);outline:none}
   .adder input:focus{border-color:var(--accent)}
   .adder .addbtn{border:1px solid var(--accent);background:var(--panel);color:var(--accent);border-radius:5px;
     padding:4px 12px;font-size:11px;font-weight:600;flex:0 0 auto}
   .adder .addbtn:hover{background:#F4F6FE}
+  /* 프로젝트에서 추가 토글: 추적 추가 옆 보조 버튼(점선 = 부가 동작, on = 목록 펼침) */
+  .adder .projpicktoggle{border:1px dashed var(--line2);background:var(--panel);color:var(--mut2);
+    border-radius:5px;padding:4px 12px;font-size:11px;font-weight:600;flex:0 0 auto;
+    cursor:pointer;white-space:nowrap}
+  .adder .projpicktoggle:hover{border-color:var(--accent);color:var(--accent)}
+  .adder .projpicktoggle.on{border-style:solid;border-color:var(--accent);background:#F4F6FE;color:var(--accent)}
 
   /* detail panel */
   .detail{flex:0 0 46%;min-width:400px;max-width:640px;overflow:auto;padding:20px 24px 52px;
