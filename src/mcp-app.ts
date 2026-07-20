@@ -1117,7 +1117,13 @@ function renderHistory(): void {
       `<div class="rmeta">${esc(revTime(r))} · ${esc(r.hash || t("deletedHash"))}</div></div>` +
       `<button class="rrestore" title="${esc(t("restoreTitle"))}">${esc(t("restore"))}</button>`;
     item.querySelector(".rbody")!.addEventListener("click", () => {
-      fromRev = r.snapshot; renderHistory(); renderDiffFor();
+      // 선택만 바뀌면 renderHistory() 전체 재렌더(innerHTML 재구성)를 피한다 - 그러면
+      // .rev-list 스크롤이 최상단으로 리셋된다. 강조 클래스만 교체 + diff 만 갱신
+      // (비교 select 핸들러와 동일 패턴) -> 스크롤/펼침 상태 유지.
+      fromRev = r.snapshot;
+      tl.querySelectorAll(".rev").forEach((el) => el.classList.remove("sel"));
+      item.classList.add("sel");
+      renderDiffFor();
     });
     item.querySelector(".rrestore")!.addEventListener("click", (e) => {
       e.stopPropagation(); inlineRestore(e.currentTarget as HTMLElement, r);
