@@ -17,6 +17,22 @@ import {
 const pexec = promisify(execFile);
 export const RESOURCE_URI = "ui://config-monitor/dashboard.html";
 
+// CONFIG_MONITOR_LANG: 대시보드 시작 언어. ko/ko-KR/KO_KR 계열 -> ko, en/en-US/EN 계열 -> en.
+// 미지정이면 null 을 돌려 UI 가 스스로 결정하게 둔다(저장된 토글 선택 -> 없으면 ko).
+// 인식 못 하는 값은 ko(안전한 기본). 지역 접미사는 '-'/'_' 앞자리만 본다.
+export function resolveLang(raw?: string): "ko" | "en" | null {
+  const v = String(raw ?? "").trim().toLowerCase().split(/[-_]/)[0];
+  if (!v) return null;
+  return v === "en" ? "en" : "ko";
+}
+
+// 빌드된 대시보드 HTML 에 시작 언어를 주입하는 <script>. env 미지정이면 빈 문자열
+// (주입하지 않아야 UI 가 브라우저의 저장된 선택을 쓸 수 있다 - 항상 주입하면 그 경로가 죽는다).
+export function langScript(): string {
+  const l = resolveLang(process.env.CONFIG_MONITOR_LANG);
+  return l ? `<script>window.__CONFIG_MONITOR_LANG__=${JSON.stringify(l)};</script>` : "";
+}
+
 const READ = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 const WRITE = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
 const EDIT = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false };
@@ -307,10 +323,19 @@ export function buildTools(scriptDir: string): ToolDef[] {
       name: "config_skill_remove",
       meta: {
         title: "Remove Code Skill",
-        description: "~/.claude/skills/<name> 을 .trash 로 이동(복구 가능). 편집 전 스냅샷",
-        inputSchema: z.object({ name: z.string() }), annotations: EDIT,
+        description: "스킬 디렉토리를 .trash 로 이동(복구 가능). 편집 전 스냅샷. " +
+          "skillsDir 지정 시 그 디렉토리 대상(프로젝트-로컬 스킬), 생략 시 ~/.claude/skills",
+        inputSchema: z.object({
+          name: z.string(),
+          skillsDir: z.string().optional().describe("대상 skills 디렉토리(<프로젝트>/.claude/skills). 생략 시 전역 ~/.claude/skills"),
+        }), annotations: EDIT,
       },
-      run: async (a: { name: string }) => jsonResult(await runPy("config_edit.py", ["skill-remove", a.name])),
+      run: async (a: { name: string; skillsDir?: string }) => {
+        // --skills-dir 는 부모 파서 옵션이라 subcommand 앞에 와야 argparse 가 인식.
+        const args = a.skillsDir ? ["--skills-dir", a.skillsDir] : [];
+        args.push("skill-remove", a.name);
+        return jsonResult(await runPy("config_edit.py", args));
+      },
     },
     {
       name: "config_agent_add",
@@ -336,10 +361,19 @@ export function buildTools(scriptDir: string): ToolDef[] {
       name: "config_agent_remove",
       meta: {
         title: "Remove Agent",
-        description: "~/.claude/agents/<name>(.md) 을 .trash 로 이동(복구 가능). 편집 전 스냅샷",
-        inputSchema: z.object({ name: z.string() }), annotations: EDIT,
+        description: "에이전트 <name>(.md) 을 .trash 로 이동(복구 가능). 편집 전 스냅샷. " +
+          "agentsDir 지정 시 그 디렉토리 대상(프로젝트-로컬 에이전트), 생략 시 ~/.claude/agents",
+        inputSchema: z.object({
+          name: z.string(),
+          agentsDir: z.string().optional().describe("대상 agents 디렉토리(<프로젝트>/.claude/agents). 생략 시 전역 ~/.claude/agents"),
+        }), annotations: EDIT,
       },
-      run: async (a: { name: string }) => jsonResult(await runPy("config_edit.py", ["agent-remove", a.name])),
+      run: async (a: { name: string; agentsDir?: string }) => {
+        // --agents-dir 는 부모 파서 옵션이라 subcommand 앞에 와야 argparse 가 인식.
+        const args = a.agentsDir ? ["--agents-dir", a.agentsDir] : [];
+        args.push("agent-remove", a.name);
+        return jsonResult(await runPy("config_edit.py", args));
+      },
     },
     {
       name: "config_mcp_add",
@@ -525,6 +559,7 @@ export function registerAll(server: any, scriptDir: string): void {
 
   registerAppResource(server, RESOURCE_URI, RESOURCE_URI, { mimeType: RESOURCE_MIME_TYPE }, async () => {
     const html = await fs.readFile(path.join(scriptDir, "dist", "dashboard.html"), "utf-8");
-    return { contents: [{ uri: RESOURCE_URI, mimeType: RESOURCE_MIME_TYPE, text: html }] };
+    // 위젯 iframe 은 localStorage 가 막힐 수 있어 저장된 언어 선택이 남지 않는다 -> env 로 시작 언어 지정.
+    return { contents: [{ uri: RESOURCE_URI, mimeType: RESOURCE_MIME_TYPE, text: html.replace("<head>", "<head>" + langScript()) }] };
   });
 }

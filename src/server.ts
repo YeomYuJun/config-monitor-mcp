@@ -10,7 +10,7 @@ import express from "express";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import fs from "node:fs/promises";
-import { registerAll, buildTools } from "./mcp-tools.ts";
+import { registerAll, buildTools, langScript } from "./mcp-tools.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3002);
@@ -29,7 +29,8 @@ app.use(express.json({ limit: "20mb" }));
 app.get("/", async (_req, res) => {
   try {
     let html = await fs.readFile(join(__dirname, "dist", "dashboard.html"), "utf-8");
-    html = html.replace("<head>", '<head><script>window.__CONFIG_MONITOR_HTTP__=true;</script>');
+    // standalone 플래그 + (env 지정 시) 시작 언어. 언어는 MCP 위젯 경로와 같은 주입을 쓴다.
+    html = html.replace("<head>", '<head><script>window.__CONFIG_MONITOR_HTTP__=true;</script>' + langScript());
     res.type("html").send(html);
   } catch {
     res.status(500).send("dist/dashboard.html 없음 - 먼저 'npm run build' 를 실행하세요.");

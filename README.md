@@ -15,6 +15,7 @@ Every change is reversible by design. Edits take an automatic snapshot before th
 ## Table of Contents
 
 - [About This Project](#about-this-project)
+- [Simple Usage](#simple-usage)
 - [Features](#features)
 - [Requirements](#requirements)
 - [Setup](#setup)
@@ -29,11 +30,17 @@ Every change is reversible by design. Edits take an automatic snapshot before th
 - [Troubleshooting](#troubleshooting)
 - [Notes](#notes)
 
+## Simple Usage
+<img src="/assets/img/simple-usage.png" width="440" alt="config-monitor dashboard">
+
+Just send a simple message like `Show config-monitor` in Claude Desktop and the dashboard opens right up.
+Cowork supports both inline and fullscreen; Code supports inline only (following the Desktop spec).
+
 ## Features
 
 - **One view across sources** — Claude Code, Claude Desktop, and each tracked project side by side, with scope badges (`global` / `project`).
 - **Snapshots & diffs** — track any config file, browse its snapshot timeline, compare two versions, and restore an earlier one.
-- **Direct editing** — add or remove `allow` / `deny` / `ask` permissions, hooks, and MCP servers; scaffold or remove skills and agents.
+- **Direct editing, global or per-project** — add or remove `allow` / `deny` / `ask` permissions, hooks, and MCP servers; scaffold or remove skills and agents. A project-scoped card always edits that project's own `.claude/`, never the global one.
 - **Library install** — install/remove a local library (agents / commands / skills) into the global config or a specific project. Additive, not an overwrite, so existing settings stay intact.
 - **Override badges** — when two items share a name, the one that is *not* actually applied is flagged, following the real precedence rules (project wins for agents, global wins for skills).
 - **Reversible by default** — auto-snapshot before every edit; `.bak` / `.trash` backups before every overwrite or delete.
@@ -62,7 +69,8 @@ npm run build
   "command": "npx",
   "args": ["tsx", "C:/tools/config-monitor/src/server-stdio.ts"],
   "env": {
-    "CLAUDE_SNAPSHOT_STORE": "C:/Users/<you>/.claude-snapshot"
+    "CLAUDE_SNAPSHOT_STORE": "C:/Users/<you>/.claude-snapshot",
+    "CONFIG_MONITOR_LANG": "en"
   }
 }
 ```
@@ -70,6 +78,7 @@ npm run build
 - `args` path → your unzipped folder's `src/server-stdio.ts`.
 - `CLAUDE_SNAPSHOT_STORE` → where snapshots are stored (must be an existing drive; defaults to `D:\.claude-snapshot` if unset).
 - *(optional)* to use a library, add `"CLAUDE_CONFIG_LIBRARIES": "C:/.../my-library/.claude"` to `env`.
+- *(optional)* to start the dashboard in English, add `"CONFIG_MONITOR_LANG": "en"` to `env`. Accepted values are case-insensitive and ignore the region suffix — `en` / `EN` / `en-US` start in English, `ko` / `KO` / `ko-KR` in Korean. **Unset, empty, or an unrecognized value starts in Korean.**
 
 > **Config file location varies by install type.** Standard installs use `%APPDATA%\Claude\claude_desktop_config.json`; Microsoft Store / MSIX installs use `%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\claude_desktop_config.json`. The most recently modified one is the config your running Claude reads.
 
@@ -101,7 +110,9 @@ Cards for each category — MCP Servers, Claude Code (`.claude.json`), Permissio
 
 **Override badges** mark items that share a name but are *not* actually applied, with a dashed border and an amber tag. Precedence runs opposite ways: for **Agents** the project wins, so the **global** card is badged; for **Skills** the global (personal) config wins, so the **project** card is badged.
 
-You can filter instantly with the scope chips, then **edit in place**: add/remove permission rules and hooks, add/remove MCP servers, and scaffold or remove skills and agents. Project-sourced items are view-only.
+You can filter instantly with the scope chips, then **edit in place** — the same actions on global and project cards alike: add/remove permission rules and hooks, add/remove MCP servers, and scaffold or remove skills and agents.
+
+A project card carries its own target path, so removing a project skill or agent moves it to that project's own `.claude/skills/.trash` or `.claude/agents/.trash` — the global copy of the same name is untouched. Hover **✕ Remove** to see the exact target directory before confirming; this matters most on a card badged *shadowed by personal*, where a global item of the same name is the one actually in use. Adding a new skill or agent to a project is done from the [Library](#library) panel; a few card types stay read-only (see [Known limits](#what-it-reads)).
 
 ### Library
 
@@ -143,10 +154,11 @@ The dashboard does not dump whole files — it extracts only the fields it needs
 | Hooks | `~/.claude/settings.json` | matcher count + command list per `hooks.<event>` |
 | Skills (code) | `~/.claude/skills/` | immediate subfolders; `SKILL.md` `description` |
 | Agents | `~/.claude/agents/` | frontmatter `name`, `description`, `tools` |
+| Commands | `~/.claude/commands/` | frontmatter `description` (subfolders are namespaces) |
 | Scheduled Tasks | `~/Claude/Scheduled/*/SKILL.md` | `description`, `cron`/`schedule`/`fireAt` |
 | Desktop Skills | `<Desktop>/.../skills-plugin/**/manifest.json` | `description`, `creatorType`, `enabled`, `updatedAt` |
 
-When a project is tracked, the Permissions / Hooks / Skills / Agents sections also read that project's `.claude/{settings.json,settings.local.json}`, `.claude/skills/`, and `.claude/agents/` and append them as project items.
+When a project is tracked, the Permissions / Hooks / Skills / Agents / Commands sections also read that project's `.claude/{settings.json,settings.local.json}`, `.claude/skills/`, `.claude/agents/`, and `.claude/commands/` and append them as project items. A project's `.mcp.json` gets its own **MCP Servers (project)** section, since it is committed and affects the whole team.
 
 </details>
 
@@ -154,7 +166,9 @@ When a project is tracked, the Permissions / Hooks / Skills / Agents sections al
 <summary>Known limits</summary>
 
 - `settings.json` and `settings.local.json` are **both** read, but shown as separate cards (not merged), each labeled with its source.
-- `skills` is read one level deep; `agents` and `commands` recurse into subfolders (nested items are view-only).
+- `skills` is read one level deep; `agents` and `commands` recurse into subfolders (nested items are view-only, global and project alike, because the remove operation takes a single-segment name).
+- **Commands** and a project's **`.mcp.json`** are shown but read-only at every scope — no remove operation exists for them yet.
+- The `＋ new skill` / `＋ new agent` scaffold cards are global-only; to add one to a project, install it from the Library panel.
 - Project cards are capped at 20.
 - Long values are truncated — descriptions at 600 chars, everything else at 160.
 - Only what appears as a card is editable; keys that aren't parsed can't be changed from the dashboard.
@@ -164,10 +178,14 @@ When a project is tracked, the Permissions / Hooks / Skills / Agents sections al
 ## Troubleshooting
 
 - **Widget doesn't appear** → run `npm run build` again.
+- **`npm run build` fails with `No matching HTML proxy module found`** → a known transient Vite fault; just run it again.
+- **`CONFIG_MONITOR_LANG` seems ignored** → it is read by the MCP server process, so restart Claude Desktop after editing `env`. In the browser, remember the variable overrides a remembered KO / EN choice, not the other way around.
 - **`python` not found** (only `py` works) → add `"CONFIG_MONITOR_PYTHON": "py"` (or the full `python.exe` path) to the `env` block.
 - **Snapshot / restore errors** → check the `CLAUDE_SNAPSHOT_STORE` path (defaults to `D:\.claude-snapshot`).
 - **Watcher won't toggle** → run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once.
 
 ## Notes
 
-Precedence and path-coverage details are summarized from the official Claude Code docs (skills, sub-agents, settings, memory, hooks, MCP) and may shift between versions — if behavior differs, defer to the docs. Local-config editing is intentionally constrained today to preserve structural integrity, and broader per-project editing is planned.
+Precedence and path-coverage details are summarized from the official Claude Code docs (skills, sub-agents, settings, memory, hooks, MCP) and may shift between versions — if behavior differs, defer to the docs.
+
+Per-project editing now covers permissions, hooks, skills, and agents: every project card carries its own target path, so an edit cannot land on the global config by mistake, and the dashboard only accepts a path shaped like `<project>/.claude/{skills,agents}`. What is still read-only (commands, a project's `.mcp.json`) is constrained deliberately — no safe remove operation exists for those yet.

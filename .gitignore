@@ -22,3 +22,11 @@ config-report.html
 .DS_Store
 Thumbs.db
 *.log
+
+# local
+docs/
+trash/
+
+# packaging
+pack-source.ps1
+

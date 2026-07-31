@@ -148,8 +148,9 @@ def _source_label(files):
     return f"{files[0]}  (+{len(files)-1} more)" if len(files) > 1 else files[0]
 
 # --- 섹션별 카드 빌더(전역/프로젝트 공용). scope=None 이면 전역,
-#     scope="project" 이면 프로젝트 항목으로 태깅. 프로젝트 skills/agents 는 편집 대상이
-#     전역 디렉토리라 오설치/오삭제 위험 -> 뷰 전용(edit 미부여). permissions/hooks 만 편집 가능(대상 settings 파일 지정).
+#     scope="project" 이면 프로젝트 항목으로 태깅. 프로젝트 항목은 편집 대상 경로를 카드가 직접 들고 간다
+#     (perm/hook 은 edit.settings, skills/agents 는 edit.dir) -> 전역 디렉토리 오삭제 없이 로컬 제거 가능.
+#     전역 카드에는 그 경로를 붙이지 않는다: 도구 기본값(~/.claude)으로 가는 기존 호출을 그대로 유지.
 def _perm_cards(cs, scope=None, project=None):
     cards = []
     if cs and os.path.exists(cs):
@@ -187,7 +188,9 @@ def _skill_cards(sd, scope=None, project=None):
             if os.path.isdir(full):
                 has_md = os.path.exists(os.path.join(full, "SKILL.md"))
                 meta = read_frontmatter(os.path.join(full, "SKILL.md")) if has_md else {}
-                edit = None if scope == "project" else {"kind": "skill", "name": name}
+                edit = {"kind": "skill", "name": name}
+                if scope == "project":
+                    edit["dir"] = sd   # 이 프로젝트의 skills 디렉토리를 제거 대상으로 명시
                 cards.append(card(name, [("desc", meta.get("description", "-")), ("path", full)],
                                   badge="SKILL.md" if has_md else "no md", ok=has_md,
                                   edit=edit, scope=scope, project=project))
@@ -292,8 +295,10 @@ def _agent_cards(ad, scope=None, project=None):
         for rel, md, disp, top in _iter_agents(ad):
             meta = read_frontmatter(md) if os.path.exists(md) else {}
             # 제거 op 는 파일시스템 이름 기준 - frontmatter name 과 다를 수 있다.
-            # 프로젝트 항목과 중첩 항목(top=None)은 편집 미부여.
-            edit = {"kind": "agent", "name": top} if (scope != "project" and top) else None
+            # 중첩 항목(top=None)은 제거 op 가 단일 세그먼트만 받으므로 뷰 전용(전역/프로젝트 동일).
+            edit = {"kind": "agent", "name": top} if top else None
+            if edit and scope == "project":
+                edit["dir"] = ad   # 이 프로젝트의 agents 디렉토리를 제거 대상으로 명시
             cards.append(card(meta.get("name", rel), [
                 ("desc", meta.get("description", "-")),
                 ("tools", meta.get("tools", "-")),

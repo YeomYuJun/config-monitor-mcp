@@ -14,6 +14,8 @@ config_edit.py - Claude 설정 파일 안전 편집기 (스냅샷-선행 + atomi
     <Desktop> = Win32 는 %APPDATA%/Claude, MSIX/Store 는 패키지 하위. paths.py 가 프로브해 해석.
   ~/.claude/skills/<name>/                         code 스킬 (scaffold/remove)
   ~/.claude/agents/<name>.md                       에이전트 (scaffold/remove)
+    --skills-dir/--agents-dir 로 프로젝트-로컬(<root>/.claude/skills) 지정 가능.
+    형태는 <...>/.claude/<skills|agents> 로 제한(_safe_config_dir).
 출력은 항상 JSON 한 줄 ({ok, message, ...}) — MCP 서버가 그대로 파싱.
 
 ops:
@@ -160,6 +162,17 @@ def _safe_name(name):
         out(False, f"이름이 유효하지 않음: '{name}'")
     return name
 
+def _safe_config_dir(d, sub):
+    """--skills-dir/--agents-dir 검증: <...>/.claude/<sub> 형태만 허용.
+    이 옵션들이 MCP 도구 파라미터(프로젝트-로컬 삭제)로 노출되면서 임의 경로가 trash() 까지
+    도달할 수 있게 됐다. _safe_name 은 이름 세그먼트만 막으므로 디렉토리도 한 겹 막는다.
+    전역(~/.claude/skills)과 프로젝트(<root>/.claude/skills) 둘 다 이 형태라 호출부는 그대로."""
+    n = os.path.normpath(d)
+    nc = os.path.normcase                                  # Win 대소문자 무시 / POSIX 그대로
+    if nc(os.path.basename(n)) != nc(sub) or nc(os.path.basename(os.path.dirname(n))) != nc(".claude"):
+        out(False, f"설정 디렉토리가 유효하지 않음(<...>/.claude/{sub} 형태만 허용): '{d}'")
+    return n
+
 def main():
     ap = argparse.ArgumentParser(prog="config_edit")
     ap.add_argument("--settings", default=DEFAULT_SETTINGS)
@@ -188,6 +201,12 @@ def main():
     p.add_argument("--scope", choices=["user", "desktop"], default="user")
 
     a = ap.parse_args()
+
+    # skills/agents 디렉토리 인자는 쓰이기 전에 형태 검증(_safe_config_dir 주석 참고).
+    if a.op in ("skill-scaffold", "skill-remove"):
+        a.skills_dir = _safe_config_dir(a.skills_dir, "skills")
+    elif a.op in ("agent-scaffold", "agent-remove"):
+        a.agents_dir = _safe_config_dir(a.agents_dir, "agents")
 
     # ── 파일/디렉토리 기반 ops (skills / agents) ──
     if a.op == "skill-scaffold":

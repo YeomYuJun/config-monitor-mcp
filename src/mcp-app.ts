@@ -122,8 +122,19 @@ const I18N: Record<string, Record<string, string>> = {
   },
 };
 
-let lang = "ko";
-try { if (localStorage.getItem("cm.lang") === "en") lang = "en"; } catch { /* iframe 에서 localStorage 차단될 수 있음 */ }
+// 시작 언어: CONFIG_MONITOR_LANG(서버가 주입) > 저장된 토글 선택 > ko.
+// env 를 주면 두 표면(Desktop 위젯 / 브라우저)이 같은 언어로 시작한다. 저장된 선택은 env 미지정일 때만
+// 쓰이고, 사실상 브라우저(standalone)에서만 남는다 - 위젯 iframe 은 localStorage 가 막힐 수 있다.
+// 토글 버튼은 어느 쪽이든 그 세션 동안 동작한다.
+let lang: string = (window as any).__CONFIG_MONITOR_LANG__ === "en" ? "en"
+  : (window as any).__CONFIG_MONITOR_LANG__ === "ko" ? "ko" : "";
+if (!lang) {
+  try {
+    const saved = localStorage.getItem("cm.lang");
+    if (saved === "en" || saved === "ko") lang = saved;
+  } catch { /* iframe 에서 localStorage 차단될 수 있음 */ }
+}
+if (!lang) lang = "ko";
 const t = (k: string): string => (I18N[lang] || I18N.ko)[k] ?? k;
 
 async function callTool(name: string, args: Record<string, unknown> = {}): Promise<string> {
@@ -615,17 +626,22 @@ function buildEditUI(edit: any): HTMLElement {
 
 // 카드 단위 제거(mcp/skill/agent): 제거 버튼 -> 인라인 확인 -> 해당 remove 도구 호출.
 function buildRemoveUI(edit: any): HTMLElement {
+  // edit.dir = 프로젝트-로컬 항목의 skills/agents 디렉토리. 전역 카드는 미부여 -> 도구 기본값(~/.claude).
   const doRemove = () => {
     if (edit.kind === "mcp") return callTool("config_mcp_remove", { name: edit.name, scope: edit.scope });
-    if (edit.kind === "skill") return callTool("config_skill_remove", { name: edit.name });
-    return callTool("config_agent_remove", { name: edit.name });
+    if (edit.kind === "skill")
+      return callTool("config_skill_remove", { name: edit.name, ...(edit.dir ? { skillsDir: edit.dir } : {}) });
+    return callTool("config_agent_remove", { name: edit.name, ...(edit.dir ? { agentsDir: edit.dir } : {}) });
   };
   const wrap = document.createElement("div");
   wrap.className = "edit";
   const btn = document.createElement("button");
   btn.className = "cx";
   btn.textContent = "✕ " + t("remove");
-  btn.title = edit.kind === "mcp" ? `mcpServers.${edit.name} ${t("remove")} (${edit.scope})` : t("trashMoveHint");
+  // 로컬 항목은 어느 프로젝트에서 지워지는지가 중요하므로 스코프+대상 디렉토리를 title 에 노출.
+  // ('전역에 가려짐' 배지가 붙은 카드는 카드 title 이 그 설명이라 버튼 쪽에서 스코프를 다시 못박는다.)
+  btn.title = edit.kind === "mcp" ? `mcpServers.${edit.name} ${t("remove")} (${edit.scope})`
+    : edit.dir ? `${t("kindProject")} · ${edit.dir} · ${t("trashMoveHint")}` : t("trashMoveHint");
   btn.addEventListener("click", () => {
     const ok = document.createElement("button");
     ok.className = "ok";

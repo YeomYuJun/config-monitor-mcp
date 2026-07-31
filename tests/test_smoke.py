@@ -254,8 +254,9 @@ class ConfigEditExtended(unittest.TestCase):
         self.tmp = tempfile.mkdtemp(prefix="edit_ext_")
         self.claude_json = os.path.join(self.tmp, "claude.json")
         self.desktop = os.path.join(self.tmp, "desktop_config.json")
-        self.skills = os.path.join(self.tmp, "skills")
-        self.agents = os.path.join(self.tmp, "agents")
+        # 실제 형태(<root>/.claude/<sub>)로 픽스처를 잡는다 - config_edit 이 이 형태만 받는다.
+        self.skills = os.path.join(self.tmp, ".claude", "skills")
+        self.agents = os.path.join(self.tmp, ".claude", "agents")
         with open(self.claude_json, "w", encoding="utf-8") as f:
             json.dump({"mcpServers": {}, "other": "keep"}, f)
         with open(self.desktop, "w", encoding="utf-8") as f:
@@ -328,6 +329,16 @@ class ConfigEditExtended(unittest.TestCase):
         rc, out, err = self.edit("skill-remove", "../evil")
         self.assertNotEqual(rc, 0)
         self.assertFalse(json.loads(out)["ok"])
+
+    def test_bad_skills_dir_rejected(self):
+        """--skills-dir 가 MCP 도구로 노출되므로 <...>/.claude/skills 아닌 경로는 trash() 전에 거부."""
+        victim = os.path.join(self.tmp, "notclaude", "skills", "myskill")
+        os.makedirs(victim)
+        rc, out, err = run(EDIT, "--skills-dir", os.path.dirname(victim), "--no-snapshot",
+                           "skill-remove", "myskill")
+        self.assertNotEqual(rc, 0)
+        self.assertFalse(json.loads(out)["ok"])
+        self.assertTrue(os.path.isdir(victim))          # 그대로 남아야 함
 
     def test_agent_full_content_install(self):
         # --content: 업로드된 완전한 md(frontmatter+본문)를 그대로 설치, 스텁 아님.
