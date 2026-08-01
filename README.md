@@ -1,4 +1,4 @@
-# Config-Monitor MCPAPPS
+# Config Monitor — MCP Apps dashboard for Claude
 
 > See, edit, and roll back your Claude configuration — global and per-project — from a single screen.
 
