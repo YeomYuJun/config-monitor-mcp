@@ -251,10 +251,14 @@ def cmd_untrack(args):
     save_json(p["config"], config)
     # index 에서도 제거: status 의 'deleted' 는 index(스냅샷된 파일) 기준이라 tracked 에서 빠져도
     # index 에 남아 있으면 계속 삭제됨 상태로 표시된다. 추적 해제 = index 에서도 완전 제외.
+    # 디렉토리 항목(구버전 track 의 raw 저장분)은 index 에 '하위 파일' 경로로 들어 있어
+    # 정확 일치로는 안 지워진다 — prefix 매칭으로 하위 경로까지 함께 제거.
+    dir_prefixes = tuple(t + os.sep for t in targets if not any(c in t for c in "*?[]"))
     index = load_json(p["index"], {})
     idx_removed = 0
     for k in list(index):
-        if k in targets or os.path.abspath(os.path.expanduser(k)) in targets:
+        ak = os.path.abspath(os.path.expanduser(k))
+        if k in targets or ak in targets or ak.startswith(dir_prefixes):
             del index[k]
             idx_removed += 1
     if idx_removed:

@@ -596,6 +596,30 @@ class TrackProjectPreset(unittest.TestCase):
         allpaths = [p for k in ("new", "modified", "deleted", "unchanged") for p in st2.get(k, [])]
         self.assertNotIn(self._nc(f), [self._nc(x) for x in allpaths])
 
+    def test_untrack_directory_entry_purges_index_subtree(self):
+        # 회귀: 구버전 track 은 디렉토리를 확장 없이 raw 로 저장했다. 이런 레거시 항목을
+        # untrack 하면 index 에는 '하위 파일' 경로들이 들어 있어 정확 일치로는 하나도 안 지워지고,
+        # 하위 파일 전부가 deleted 로 계속 표시된다. 디렉토리 항목은 하위 index 도 지워야 한다.
+        proj = os.path.join(self.tmp, "legacy")
+        self._make(os.path.join(proj, "a.txt"), "a")
+        self._make(os.path.join(proj, "sub", "b.txt"), "b")
+        cfg_path = os.path.join(self.store, "config.json")
+        with open(cfg_path, encoding="utf-8") as f:
+            cfg = json.load(f)
+        cfg["tracked"].append(os.path.abspath(proj))   # 레거시 상태 재현(raw 디렉토리)
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f)
+        self.cas("snapshot")                           # 하위 파일들이 index 에 등록
+        r = json.loads(self.cas("untrack", "--json", proj)[1])
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["index_removed"], 2, "디렉토리 하위 index 항목이 제거돼야 함")
+        st = json.loads(self.cas("status", "--json")[1])
+        allpaths = [self._nc(x) for k in ("new", "modified", "deleted", "unchanged")
+                    for x in st.get(k, [])]
+        prefix = self._nc(proj) + os.sep
+        self.assertFalse(any(p.startswith(prefix) for p in allpaths),
+                         "untrack 후에도 하위 파일이 status 에 남음(deleted 잔존)")
+
     def test_status_defaults_classifies_global_vs_project(self):
         # fake HOME 의 ~/.claude.json 은 DEFAULT_TRACKED(전역)로 분류, 프로젝트 파일은 아님.
         fake_home = os.path.join(self.tmp, "home")
