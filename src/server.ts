@@ -63,6 +63,9 @@ app.post("/mcp", async (req, res) => {
   await transport.handleRequest(req, res, req.body);
 });
 
-app.listen(PORT, () => {
-  console.error(`[config-monitor] HTTP at http://localhost:${PORT}/ (dashboard) · /mcp · /api/tool/:name`);
+// 루프백 전용 바인딩: /api/tool/:name 은 인증 없이 편집 도구를 그대로 노출하고 cors() 도 전 오리진
+// 허용이다. 이 서버는 로컬 설정 파일을 읽고 쓰는 용도라 원격 사용 자체가 대상이 아니므로,
+// 0.0.0.0(기본값)으로 열어 같은 네트워크의 다른 기기에 노출될 이유가 없다.
+app.listen(PORT, "127.0.0.1", () => {
+  console.error(`[config-monitor] HTTP at http://127.0.0.1:${PORT}/ (dashboard) · /mcp · /api/tool/:name`);
 });

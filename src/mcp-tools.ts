@@ -496,7 +496,9 @@ export function buildTools(scriptDir: string): ToolDef[] {
       },
       run: async (a: { port?: number }) => {
         const port = a.port || Number(process.env.PORT || 3002);
-        const url = `http://localhost:${port}/`;
+        // 서버가 127.0.0.1 에만 바인딩하므로 주소도 맞춘다. 'localhost' 는 Windows 에서 ::1 로
+        // 먼저 해석될 수 있어, IPv4 전용 리스너에 프로브/브라우저가 못 붙는 경우가 생긴다.
+        const url = `http://127.0.0.1:${port}/`;
         const up = await fetch(url).then((r) => r.ok).catch(() => false);
         if (!up) {
           // server.ts(HTTP) 를 detached 로 기동. watcher 와 동일한 Start-Process 패턴.

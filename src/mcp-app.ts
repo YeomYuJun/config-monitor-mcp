@@ -1079,6 +1079,9 @@ async function selectFile(p: string): Promise<void> {
   const body = $("panel-body");
   body.innerHTML = `<div class="empty">${esc(t("loading"))}</div>`;
   const h = jparseLast(await callTool("get_file_history", { path: p }));
+  // 응답 도착 전에 사용자가 다른 파일을 골랐으면 이 응답은 버린다. 안 버리면 헤더는 새 파일인데
+  // 타임라인은 이전 파일이 되고, 그 상태로 복원하면 엉뚱한 파일이 롤백된다.
+  if (selectedPath !== p) return;
   currentRevs = (h && h.revisions) || [];
   // 선택 행 다시 표시(refresh 없이 강조만). full path 로 매칭(같은 basename, 예: 여러 settings.json
   // 파일이 함께 강조되는 버그 방지).

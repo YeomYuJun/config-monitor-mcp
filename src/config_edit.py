@@ -59,10 +59,26 @@ def out(ok, message, **extra):
     sys.exit(0 if ok else 1)
 
 def load(path):
+    # utf-8-sig: PowerShell Out-File 등이 남기는 BOM 을 견딘다(utf-8 로 열면 json 이 거부해
+    # 편집이 전부 트레이스백으로 죽고 stdout 순수 JSON 계약도 깨진다). BOM 없는 파일도 동일 처리.
     if not os.path.exists(path):
         return {}
-    with open(path, encoding="utf-8") as f:
+    with open(path, encoding="utf-8-sig") as f:
         return json.load(f)
+
+def _slot_dict(d, key):
+    """d[key] 를 dict 로 보장하고 반환. 손편집으로 남은 null 을 빈 값으로 되살린다."""
+    v = d.get(key)
+    if not isinstance(v, dict):
+        v = d[key] = {}
+    return v
+
+def _slot_list(d, key):
+    """d[key] 를 list 로 보장하고 반환(위와 동일 취지)."""
+    v = d.get(key)
+    if not isinstance(v, list):
+        v = d[key] = []
+    return v
 
 def backup(path):
     if os.path.exists(path):
@@ -117,39 +133,54 @@ def edit_json_file(path, mutate, no_snapshot, store):
 # ── ops (settings 딕셔너리를 받아 (settings, msg) 반환) ──
 
 def op_perm_add(s, kind, rule):
-    lst = s.setdefault("permissions", {}).setdefault(kind, [])
+    lst = _slot_list(_slot_dict(s, "permissions"), kind)
     if rule in lst:
         return s, f"이미 존재: {kind} '{rule}'", False
     lst.append(rule)
     return s, f"추가됨: permissions.{kind} += '{rule}'", True
 
 def op_perm_remove(s, kind, rule):
-    lst = s.get("permissions", {}).get(kind, [])
+    lst = _slot_list(_slot_dict(s, "permissions"), kind)
     if rule not in lst:
         return s, f"없음(변경 안 함): {kind} '{rule}'", False
     lst.remove(rule)
     return s, f"제거됨: permissions.{kind} -= '{rule}'", True
 
 def op_hook_add(s, event, command, matcher):
-    arr = s.setdefault("hooks", {}).setdefault(event, [])
+    arr = _slot_list(_slot_dict(s, "hooks"), event)
     arr.append({"matcher": matcher or "*", "hooks": [{"type": "command", "command": command}]})
     return s, f"hook 추가됨: {event} (matcher={matcher or '*'}) <- {command}", True
 
 def op_hook_remove(s, event, needle):
-    arr = s.get("hooks", {}).get(event, [])
-    before = len(arr)
-    arr[:] = [h for h in arr if needle not in json.dumps(h, ensure_ascii=False)]
-    n = before - len(arr)
-    return s, f"hook 제거됨 {n}건: {event} ~ '{needle}'", n > 0
+    r"""command 가 needle 과 정확히 일치하는 훅만 제거.
+    직렬화 JSON 에 부분 문자열로 맞추던 방식은 세 가지가 동시에 틀렸다:
+      - 접두가 같은 다른 훅까지 제거('node a.js' 로 'node a.js --verbose' 까지)
+      - 명령 속 " 나 \ 가 json.dumps 로 이스케이프돼 매칭 자체가 성립 안 함(제거 불가)
+      - 엔트리째 버려서 같은 matcher 안의 형제 훅까지 소실
+    훅 단위로 지우고 비게 된 엔트리만 정리한다."""
+    arr = _slot_list(_slot_dict(s, "hooks"), event)
+    removed, kept = 0, []
+    for ent in arr:
+        if not isinstance(ent, dict):
+            kept.append(ent)
+            continue
+        hooks = _slot_list(ent, "hooks")
+        left = [hk for hk in hooks if not (isinstance(hk, dict) and hk.get("command") == needle)]
+        removed += len(hooks) - len(left)
+        ent["hooks"] = left
+        if left:
+            kept.append(ent)
+    arr[:] = kept
+    return s, f"hook 제거됨 {removed}건: {event} ~ '{needle}'", removed > 0
 
 def op_mcp_add(d, name, server):
-    servers = d.setdefault("mcpServers", {})
+    servers = _slot_dict(d, "mcpServers")
     existed = name in servers
     servers[name] = server
     return d, f"{'갱신' if existed else '추가'}됨: mcpServers.{name}", True
 
 def op_mcp_remove(d, name):
-    servers = d.get("mcpServers", {})
+    servers = d.get("mcpServers") or {}   # 없거나 null 이면 제거할 것도 없음(키를 새로 만들지 않는다)
     if name not in servers:
         return d, f"없음(변경 안 함): mcpServers.{name}", False
     del servers[name]

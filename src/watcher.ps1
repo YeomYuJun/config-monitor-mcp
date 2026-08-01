@@ -48,11 +48,22 @@ foreach ($t in $config.tracked) {
     $n = Split-Path -Leaf $f
     $specs["$d|$n"] = @{ Dir = $d; Filter = $n; Recurse = $false }
   } else {
-    # glob 또는 미존재: 와일드카드/파일명 앞의 디렉토리 부분만 추출
+    # glob 또는 아직 없는 파일. 와일드카드 유무로 갈라야 한다 — 구체 경로를 재귀 감시로 넘기면
+    # 지워진 ~/.claude.json 하나 때문에 홈 전체가 감시 대상이 되어 이벤트가 폭주하고
+    # (스냅샷 프로세스가 debounce 마다 기동) FSW 버퍼가 넘쳐 진짜 변경을 놓친다.
     $base = Split-Path -Parent $expanded
     if ($base -and (Test-Path $base -PathType Container)) {
-      $d = (Resolve-Path $base).Path
-      $specs["$d|*"] = @{ Dir = $d; Filter = "*"; Recurse = $true }
+      # 부모가 와일드카드면 Resolve-Path 가 배열을 반환한다. 첫 매치만 쓴다(배열이 그대로
+      # FileSystemWatcher 생성자에 들어가면 예외로 죽는데, heartbeat 를 이미 쓴 뒤라
+      # 대시보드에는 '기동됨' 으로 보인 채 프로세스만 사라진다).
+      $d = @(Resolve-Path $base)[0].Path
+      if ($expanded -match '[*?\[]') {
+        $specs["$d|*"] = @{ Dir = $d; Filter = "*"; Recurse = $true }
+      } else {
+        # 미존재 파일: 부모 + 파일명 Filter, 비재귀. 파일이 다시 생기면 그때 이벤트가 온다.
+        $n = Split-Path -Leaf $expanded
+        $specs["$d|$n"] = @{ Dir = $d; Filter = $n; Recurse = $false }
+      }
     }
   }
 }

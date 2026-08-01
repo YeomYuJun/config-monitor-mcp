@@ -63,11 +63,26 @@ def all_glob(patterns):
     return sorted(set(out))
 
 def safe_load(path):
+    # utf-8-sig: PowerShell 이 남긴 BOM 을 파싱 오류로 오인하지 않게(BOM 없는 파일도 동일 처리).
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8-sig") as f:
             return json.load(f)
     except Exception as e:
         return {"__error__": str(e)}
+
+def _as_dict(v):
+    """null/비-dict 를 빈 dict 로. 손편집으로 남은 null 하나에 dump 전체가 죽지 않게 한다."""
+    return v if isinstance(v, dict) else {}
+
+def _as_list(v):
+    """null/비-list 를 빈 list 로(위와 동일 취지)."""
+    return v if isinstance(v, list) else []
+
+def _error_card(cs, scope=None, project=None):
+    """파싱 실패를 '항목 없음'으로 렌더하면 설정이 사라진 것으로 오인하게 된다.
+    읽지 못했다는 사실 자체를 카드로 드러낸다(.mcp.json 렌더러와 동일 동작)."""
+    return card("(파싱 오류)", [("source", os.path.basename(cs)), ("error", "설정을 읽지 못함")],
+                scope=scope, project=project, source=cs)
 
 def discover(extra=None):
     found = {}
@@ -154,9 +169,12 @@ def _source_label(files):
 def _perm_cards(cs, scope=None, project=None):
     cards = []
     if cs and os.path.exists(cs):
-        perms = (safe_load(cs) or {}).get("permissions", {})
+        data = _as_dict(safe_load(cs))
+        if "__error__" in data:
+            return [_error_card(cs, scope, project)]
+        perms = _as_dict(data.get("permissions"))
         for kind in ("allow", "deny", "ask"):
-            lst = perms.get(kind, []) or []
+            lst = _as_list(perms.get(kind))
             # settings 는 항상 지정 - 같은 이름의 카드가 파일마다 나오므로 편집이 그 카드의 파일로 가야 한다.
             # (전역 settings.json 이면 config_edit 의 기본 대상과 같은 경로라 동작 변화 없음.)
             edit = {"kind": "perm", "permKind": kind, "items": list(lst), "settings": cs}
@@ -168,12 +186,16 @@ def _perm_cards(cs, scope=None, project=None):
 def _hook_cards(cs, scope=None, project=None):
     cards = []
     if cs and os.path.exists(cs):
-        hooks = (safe_load(cs) or {}).get("hooks", {})
+        data = _as_dict(safe_load(cs))
+        if "__error__" in data:
+            return [_error_card(cs, scope, project)]
+        hooks = _as_dict(data.get("hooks"))
         for event, entries in hooks.items():
-            cmds = [hk.get("command", "") for ent in (entries or [])
-                    for hk in (ent.get("hooks", []) or [])]
+            entries = _as_list(entries)
+            cmds = [hk.get("command", "") for ent in entries
+                    for hk in _as_list(_as_dict(ent).get("hooks")) if isinstance(hk, dict)]
             edit = {"kind": "hook", "event": event, "items": cmds, "settings": cs}
-            cards.append(card(event, [("matchers", len(entries or [])),
+            cards.append(card(event, [("matchers", len(entries)),
                                       ("source", os.path.basename(cs))], badge="hook",
                               edit=edit, scope=scope, project=project, source=cs))
     return cards
@@ -348,16 +370,21 @@ def parse(found, project_dirs=None):
     cards = []
     dc = found.get("desktop_config")
     if dc and os.path.exists(dc):
-        servers = (safe_load(dc) or {}).get("mcpServers", {})
+        dd = _as_dict(safe_load(dc))
+        if "__error__" in dd:
+            cards.append(_error_card(dc))
+        servers = _as_dict(dd.get("mcpServers"))
         for name, cfg in servers.items():
+            cfg = _as_dict(cfg)   # 항목이 null 이어도 카드 하나가 비는 선에서 끝나게
             cards.append(card(name, [
                 ("command", cfg.get("command", "-")),
-                ("args", " ".join(cfg.get("args", [])) or "-"),
-                ("env", ", ".join((cfg.get("env") or {}).keys()) or "-"),
+                ("args", " ".join(str(x) for x in _as_list(cfg.get("args"))) or "-"),
+                ("env", ", ".join(_as_dict(cfg.get("env")).keys()) or "-"),
             ], badge="stdio" if cfg.get("command") else cfg.get("type", "?"), ok=True,
                edit={"kind": "mcp", "scope": "desktop", "name": name}))
-        cards.append(card("＋ 새 MCP 서버", [("형식", 'name {"command":"npx","args":[...]}')],
-                          badge="add", edit={"kind": "mcp-add", "scope": "desktop"}))
+        if "__error__" not in dd:
+            cards.append(card("＋ 새 MCP 서버", [("형식", 'name {"command":"npx","args":[...]}')],
+                              badge="add", edit={"kind": "mcp-add", "scope": "desktop"}))
     add({"title": f"MCP Servers (desktop) · {len(cards)}", "source": dc, "cards": cards})
 
     # 2) Claude Code 전역 (.claude.json, 관심 키만)
@@ -377,11 +404,11 @@ def parse(found, project_dirs=None):
                 ("dropped", "history(노이즈) 제외 · 관심 키만 선별 추출"),
             ], badge="claude.json", ok=True))
             # 전역 mcpServers 를 카드 단위로 노출(제거 가능) + add 카드
-            for name, cfg in (data.get("mcpServers") or {}).items():
-                cfg = cfg or {}
+            for name, cfg in _as_dict(data.get("mcpServers")).items():
+                cfg = _as_dict(cfg)
                 cards.append(card(name, [
                     ("command", cfg.get("command", "-")),
-                    ("args", " ".join(cfg.get("args", [])) or "-"),
+                    ("args", " ".join(str(x) for x in _as_list(cfg.get("args"))) or "-"),
                 ], badge="global mcp", ok=True,
                    edit={"kind": "mcp", "scope": "user", "name": name}))
             cards.append(card("＋ 새 전역 MCP 서버", [("형식", 'name {"command":"npx","args":[...]}')],

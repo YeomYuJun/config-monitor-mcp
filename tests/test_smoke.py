@@ -237,6 +237,60 @@ class ConfigEdit(unittest.TestCase):
         self.assertEqual(rc, 0, err)
         self.assertNotIn("Bash(git*)", self._load()["permissions"]["allow"])
 
+    def test_hook_remove_quoted_command(self):
+        # 회귀: needle 을 직렬화된 JSON 에 부분 문자열로 맞추면 명령 안의 " 가 \" 로 이스케이프돼
+        # 절대 매칭되지 않는다. 경로를 따옴표로 감싼 훅(실제로 가장 흔한 형태)이 제거 불가였다.
+        cmd = 'node "C:/tools/hooks/lint.js"'
+        self.edit("hook-add", "PostToolUse", cmd, "--matcher", "Edit")
+        rc, out, err = self.edit("hook-remove", "PostToolUse", cmd)
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(json.loads(out)["changed"], "따옴표 포함 명령이 제거되지 않음")
+        self.assertEqual(self._load()["hooks"]["PostToolUse"], [])
+
+    def test_hook_remove_is_exact_not_substring(self):
+        # 회귀: 부분 문자열 매칭이면 짧은 명령을 지울 때 그것을 접두로 갖는 다른 훅까지 사라진다.
+        self.edit("hook-add", "PostToolUse", "node hook.js")
+        self.edit("hook-add", "PostToolUse", "node hook.js --verbose")
+        rc, out, err = self.edit("hook-remove", "PostToolUse", "node hook.js")
+        self.assertEqual(rc, 0, err)
+        cmds = [hk["command"] for ent in self._load()["hooks"]["PostToolUse"]
+                for hk in ent.get("hooks", [])]
+        self.assertEqual(cmds, ["node hook.js --verbose"], "부분 문자열 매칭으로 다른 훅까지 제거됨")
+
+    def test_hook_remove_keeps_sibling_in_same_entry(self):
+        # 회귀: 한 matcher 엔트리에 훅이 여러 개면(손으로 작성한 형태) 엔트리째 버려서
+        # 지목하지 않은 형제 훅까지 사라졌다. 훅 단위로 지우고 빈 엔트리만 정리해야 한다.
+        with open(self.settings, "w", encoding="utf-8") as f:
+            json.dump({"hooks": {"PostToolUse": [{"matcher": "Edit", "hooks": [
+                {"type": "command", "command": "a.py"},
+                {"type": "command", "command": "b.py"}]}]}}, f)
+        rc, out, err = self.edit("hook-remove", "PostToolUse", "a.py")
+        self.assertEqual(rc, 0, err)
+        cmds = [hk["command"] for ent in self._load()["hooks"]["PostToolUse"]
+                for hk in ent.get("hooks", [])]
+        self.assertEqual(cmds, ["b.py"], "같은 엔트리의 형제 훅이 함께 삭제됨")
+
+    def test_edit_accepts_bom_settings(self):
+        # PowerShell Out-File 등이 남기는 UTF-8 BOM. utf-8 로 열면 json.load 가 거부해
+        # 모든 편집이 트레이스백으로 죽고 stdout 순수 JSON 계약도 깨진다.
+        with open(self.settings, "w", encoding="utf-8-sig") as f:
+            json.dump({"permissions": {"allow": ["Bash(ls)"]}}, f)
+        rc, out, err = self.edit("perm-add", "allow", "Bash(git*)")
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(json.loads(out)["ok"])
+        self.assertIn("Bash(git*)", self._load()["permissions"]["allow"])
+
+    def test_null_sections_do_not_crash_edit(self):
+        # 손편집으로 남는 null. permissions/hooks 가 null 이면 setdefault 결과가 None 이라
+        # AttributeError/TypeError 로 죽고 JSON 대신 트레이스백이 나갔다.
+        with open(self.settings, "w", encoding="utf-8") as f:
+            json.dump({"permissions": None, "hooks": None}, f)
+        rc, out, err = self.edit("perm-add", "allow", "Bash(git*)")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("Bash(git*)", self._load()["permissions"]["allow"])
+        rc, out, err = self.edit("hook-remove", "PostToolUse", "x")
+        self.assertEqual(rc, 0, err)  # 없는 훅 제거는 no-op(정상 종료)
+
     def test_hook_add_remove(self):
         rc, out, err = self.edit("hook-add", "PostToolUse", "echo hi", "--matcher", "Edit")
         self.assertEqual(rc, 0, err)
@@ -721,6 +775,47 @@ class ClaudeConfigDump(unittest.TestCase):
                          f"dump 가 종료코드 {p.returncode} (cp949 회귀?): {p.stderr.decode('utf-8','replace')[-400:]}")
         data = json.loads(p.stdout.decode("utf-8"))
         self.assertIn("sections", data)
+
+    def test_null_values_do_not_crash_dump(self):
+        # 회귀: 손편집으로 남은 null 하나(서버 항목/args/permissions/hooks)에 dump 전체가 죽어
+        # 카드 하나가 아니라 대시보드가 통째로 안 떴다. null 은 빈 값으로 다뤄야 한다.
+        tmp = tempfile.mkdtemp(prefix="null_test_")
+        try:
+            dc = os.path.join(tmp, "desktop.json")
+            with open(dc, "w", encoding="utf-8") as f:
+                json.dump({"mcpServers": {"dead": None,
+                                          "noargs": {"command": "npx", "args": None, "env": None}}}, f)
+            st = os.path.join(tmp, "settings.json")
+            with open(st, "w", encoding="utf-8") as f:
+                json.dump({"permissions": None, "hooks": None}, f)
+            p = subprocess.run([sys.executable, CFG, "dump", "--paths",
+                                f"desktop_config={dc}", f"code_settings={st}"],
+                               capture_output=True, text=True, encoding="utf-8", timeout=60)
+            self.assertEqual(p.returncode, 0, f"null 값에 dump 가 죽음: {p.stderr[-400:]}")
+            data = json.loads(p.stdout)
+            mcp = next(s for s in data["sections"] if s["title"].startswith("MCP Servers (desktop)"))
+            self.assertIn("dead", [c["name"] for c in mcp["cards"]])
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_broken_settings_surfaces_parse_error(self):
+        # 회귀: 파싱 실패를 빈 목록으로 렌더하면 '규칙이 사라졌다'고 오인하게 된다.
+        # (같은 파일의 .mcp.json 렌더러는 이미 오류 카드를 띄우고 있었다 - 동작을 맞춘다.)
+        tmp = tempfile.mkdtemp(prefix="broken_test_")
+        try:
+            st = os.path.join(tmp, "settings.json")
+            with open(st, "w", encoding="utf-8") as f:
+                f.write('{"permissions": {"allow": ["Bash(ls)"],,}}')   # 문법 오류
+            p = subprocess.run([sys.executable, CFG, "dump", "--paths", f"code_settings={st}"],
+                               capture_output=True, text=True, encoding="utf-8", timeout=60)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            sec = next(s for s in json.loads(p.stdout)["sections"]
+                       if s["title"].startswith("Permissions"))
+            self.assertTrue(sec["cards"], "깨진 settings 가 '규칙 없음'으로 조용히 표시됨")
+            self.assertTrue(any("오류" in c["name"] for c in sec["cards"]),
+                            f"파싱 오류 카드가 없음: {[c['name'] for c in sec['cards']]}")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
 
     def test_projects_has_claude_flag(self):
         # .claude.json projects -> {path,name,claude_dir,has_claude}. .claude 있는 것만 True.
