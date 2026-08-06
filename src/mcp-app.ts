@@ -66,6 +66,12 @@ const I18N: Record<string, Record<string, string>> = {
     selectFilePrompt: "파일 선택", selectFileHint: "왼쪽에서 추적 파일을 클릭하세요",
     libPaths: "라이브러리 경로", libPathRemoved: "경로 제거됨", libEnvTag: "env",
     libEnvHint: "환경변수(CLAUDE_CONFIG_LIBRARIES)로 지정되어 대시보드에서 제거 불가",
+    libConflict: "충돌", libConflictOverwrite: "충돌 — 덮어쓰기", libConflictConfirm: "덮어쓰기 확정",
+    libOwnedBy: "현재 소유자", libRemoteTag: "remote", libMarketTag: "market",
+    libRefetch: "새로고침", libStale: "일 전 갱신", libNeverFetched: "미갱신",
+    libRemoteAdd: "원격 등록", libRemoteUrlPlaceholder: "git 레포 URL (https://…/repo.git)",
+    libRemoteWarn: "config-monitor 는 이 URL 을 심사하지 않습니다. 등록·설치의 책임은 사용자에게 있습니다.",
+    libRemoteWarnOk: "이해했습니다 — 계속",
     libInstallSelected: "선택 설치", libInstallGroup: "그룹 설치", libInstallGroupConfirm: "그룹 설치 확정",
     libInstallGroupHint: "이 그룹의 미설치 스킬 전체 설치", libAllInstalled: "이미 전부 설치됨",
     installTarget: "설치 대상", targetGlobal: "전역 (~/.claude)", rootItems: "루트 항목 · 폴더 없음",
@@ -115,6 +121,12 @@ const I18N: Record<string, Record<string, string>> = {
     selectFilePrompt: "Select a file", selectFileHint: "Click a tracked file on the left",
     libPaths: "Library paths", libPathRemoved: "Path removed", libEnvTag: "env",
     libEnvHint: "Set via CLAUDE_CONFIG_LIBRARIES env; can't be removed from the dashboard",
+    libConflict: "Conflict", libConflictOverwrite: "Conflict — overwrite", libConflictConfirm: "Confirm overwrite",
+    libOwnedBy: "Owned by", libRemoteTag: "remote", libMarketTag: "market",
+    libRefetch: "Refresh", libStale: "d ago", libNeverFetched: "never fetched",
+    libRemoteAdd: "Add remote", libRemoteUrlPlaceholder: "git repo URL (https://…/repo.git)",
+    libRemoteWarn: "config-monitor does not vet this URL. Registering and installing is your responsibility.",
+    libRemoteWarnOk: "Understood — continue",
     libInstallSelected: "Install selected", libInstallGroup: "Install group", libInstallGroupConfirm: "Confirm install",
     libInstallGroupHint: "Install all not-installed skills in this group", libAllInstalled: "All already installed",
     installTarget: "Install to", targetGlobal: "Global (~/.claude)", rootItems: "root items · no folder",
@@ -709,11 +721,13 @@ function buildAddUI(edit: any): HTMLElement {
 
 // ----- Library section (라이브러리 토글: /plugin 식 설치/제거) -----
 const libStatus = (s: string): [string, string] =>
-  (({ not_installed: [t("libNotInstalled"), ""], installed: [t("libInstalled"), "ok"], modified: [t("libModified"), "warn"] } as Record<string, [string, string]>)[s] || [s, ""]);
+  (({ not_installed: [t("libNotInstalled"), ""], installed: [t("libInstalled"), "ok"],
+      modified: [t("libModified"), "warn"], conflict: [t("libConflict"), "err"] } as Record<string, [string, string]>)[s] || [s, ""]);
 
 // 라이브러리 경로 등록 입력행. 여러 경로 등록 가능(백엔드가 config.json libraries 배열에 멱등 append).
 // 빈 상태 등록 UI 와 채워진 목록의 "경로 추가" 양쪽에서 재사용.
 function buildLibAdder(): HTMLElement {
+  const wrap = document.createElement("div");
   const adder = document.createElement("div");
   adder.className = "adder";
   const input = document.createElement("input");
@@ -725,13 +739,49 @@ function buildLibAdder(): HTMLElement {
     const v = input.value.trim();
     if (!v) return;
     btn.textContent = "…";
-    try { await callTool("library_scan", { lib: v }); flashToast(t("libRegistered")); await refresh(); }
-    catch (e) { btn.textContent = t("failed"); console.error("[config-monitor] lib register", e); }
+    try {
+      const r = jparse(await callTool("library_scan", { lib: v }));
+      if (r && r.ok === false) { flashToast(r.message || t("failed")); btn.textContent = t("libRegister"); return; }
+      flashToast(t("libRegistered"));
+      await refresh();
+    } catch (e) { btn.textContent = t("failed"); console.error("[config-monitor] lib register", e); }
   };
   btn.addEventListener("click", submit);
   input.addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") submit(); });
   adder.append(input, btn);
-  return adder;
+
+  // 원격 등록: URL 입력 -> 경고 확인 -> 그 다음에야 네트워크를 탄다.
+  const rAdder = document.createElement("div");
+  rAdder.className = "adder";
+  const rInput = document.createElement("input");
+  rInput.placeholder = t("libRemoteUrlPlaceholder");
+  const rBtn = document.createElement("button");
+  rBtn.className = "addbtn";
+  rBtn.textContent = t("libRemoteAdd");
+  const warnBox = document.createElement("div");
+  warnBox.className = "dlabel";
+  warnBox.style.display = "none";
+  warnBox.style.margin = "4px 0";
+  rBtn.addEventListener("click", async () => {
+    const url = rInput.value.trim();
+    if (!url) return;
+    if (warnBox.style.display === "none") {
+      warnBox.textContent = t("libRemoteWarn");
+      warnBox.style.display = "";
+      rBtn.textContent = t("libRemoteWarnOk");
+      return;
+    }
+    rBtn.textContent = "…";
+    try {
+      const r = jparse(await callTool("library_remote_add", { url }));
+      if (r && r.ok === false) { flashToast(r.message || t("failed")); rBtn.textContent = t("libRemoteAdd"); return; }
+      flashToast(r?.message || t("libRegistered"));
+      await refresh();
+    } catch (e) { rBtn.textContent = t("failed"); console.error("[config-monitor] remote add", e); }
+  });
+  rAdder.append(rInput, rBtn);
+  wrap.append(adder, warnBox, rAdder);
+  return wrap;
 }
 
 // 항목(스킬/에이전트/커맨드) 액션 버튼: 상태별 설치/동기화/제거. 설치는 relpath(가변 깊이) + lib 로 지정.
@@ -755,10 +805,16 @@ function mkItemActions(it: any): HTMLElement {
     });
     return b;
   };
-  const doInstall = () => callTool("library_install", { category: it.category, path: it.relpath, lib: it.lib, targetDir: libTarget || undefined });
-  const doRemove = () => callTool("library_uninstall", { category: it.category, name: it.name, targetDir: libTarget || undefined });
+  const doInstall = () => callTool("library_install", { category: it.category, path: it.relpath, lib: it.lib, origin: it.origin, targetDir: libTarget || undefined });
+  const doRemove = () => callTool("library_uninstall", { category: it.category, name: it.name, origin: it.origin, targetDir: libTarget || undefined });
   if (it.status === "not_installed") act.appendChild(mk(t("libInstall"), doInstall));
   if (it.status === "modified") act.appendChild(mk(t("libSync"), doInstall, t("libSyncConfirm")));
+  if (it.status === "conflict") {
+    // 소유자가 다르다. 동기화가 아니라 명시적 덮어쓰기이고, 누구 것을 덮는지 보여준다.
+    const b = mk(t("libConflictOverwrite"), doInstall, t("libConflictConfirm"));
+    if (it.owner) b.title = `${t("libOwnedBy")}: ${it.owner}`;
+    act.appendChild(b);
+  }
   if (it.status !== "not_installed") act.appendChild(mk(t("remove"), doRemove, t("libUninstallConfirm")));
   return act;
 }
@@ -803,6 +859,7 @@ function mkLibRow(it: any): HTMLElement {
   const bd = document.createElement("span");
   bd.className = "badge" + (cls ? " " + cls : "");
   bd.textContent = label + (it.kit_ref ? " · " + t("kitRef") : "");
+  if (it.status === "conflict" && it.owner) bd.title = `${t("libOwnedBy")}: ${it.owner}`;
   row.append(cb, nm, bd, mkItemActions(it));
   return row;
 }
@@ -997,12 +1054,30 @@ function renderLibrary(host: HTMLElement, res: any): void {
     txt.className = "ctxt";
     txt.textContent = l.lib + (l.error ? ` · ${l.error}` : "");
     chip.appendChild(txt);
-    if (l.source === "env") {
+    if (l.source !== "registered") {
       const tag = document.createElement("span");
       tag.className = "libenv";
-      tag.textContent = t("libEnvTag");
-      tag.title = t("libEnvHint");
+      tag.textContent = l.source === "env" ? t("libEnvTag")
+        : l.source === "remote" ? t("libRemoteTag") : t("libMarketTag");
+      if (l.source === "env") tag.title = t("libEnvHint");
       chip.appendChild(tag);
+      if (l.sha) {
+        const sha = document.createElement("span");
+        sha.className = "libenv";
+        sha.textContent = String(l.sha).slice(0, 7);       // 고정 sha 표시 - 자동 pull 이 없다는 신호
+        sha.title = String(l.sha);
+        chip.appendChild(sha);
+      }
+      if (l.source !== "env") {
+        const age = document.createElement("span");
+        age.className = "libenv";
+        const days = l.fetched_at ? Math.floor((Date.now() - Date.parse(l.fetched_at)) / 86400000) : null;
+        age.textContent = days === null || Number.isNaN(days) ? t("libNeverFetched") : `${days}${t("libStale")}`;
+        chip.appendChild(age);
+      }
+      // env/remote/market 은 아직 제거 불가: library_unregister 는 cfg["libraries"](등록 경로)만 다루므로
+      // remote/market(캐시 경로) 에 쓰면 ok:true, removed:false 로 조용히 no-op(거짓 성공 토스트).
+      // library_unregister --origin(실제 remote/market 해제 + 캐시 정리 + 원장 가드)이 오기 전까진 ✕ 를 그리지 않는다 - Task 15.
       return chip;
     }
     const x = document.createElement("button");

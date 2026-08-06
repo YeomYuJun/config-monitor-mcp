@@ -406,7 +406,7 @@ export function buildTools(scriptDir: string): ToolDef[] {
       name: "library_scan",
       meta: {
         title: "Scan Personal Library",
-        description: "라이브러리(.claude 구조, CLAUDE_CONFIG_LIBRARIES env 또는 등록분)의 agents/skills/commands 를 열거하고 라이브 설정과 해시 비교해 3상태(not_installed/installed/modified) 반환. lib 지정 시 신규 등록 후 스캔",
+        description: "라이브러리(로컬 등록분 + env + 원격/마켓 캐시)의 agents/skills/commands 를 열거하고 라이브 설정과 해시 비교해 4상태(not_installed/installed/modified/conflict) 반환. 각 행에 source(env|registered|remote|market)·origin·고정 sha·fetched_at, 각 항목에 origin 과 conflict 시 owner 를 붙인다. **네트워크를 타지 않는다**(오프라인 동작 보장). lib 지정 시 신규 등록 후 스캔",
         inputSchema: z.object({
           lib: z.string().optional().describe("라이브러리 루트 경로(.claude 구조 디렉토리). 최초 1회 등록용"),
           targetDir: z.string().optional().describe("설치/비교 대상 .claude 루트(기본 ~/.claude). 프로젝트-로컬 스캔 시 지정"),
@@ -430,15 +430,17 @@ export function buildTools(scriptDir: string): ToolDef[] {
           category: z.enum(["agents", "skills", "commands"]),
           path: z.string().describe("카테고리 루트 기준 상대경로. skills 는 그룹 포함 가능, agents/commands 는 이름"),
           lib: z.string().optional(),
+          origin: z.string().optional().describe("출처 식별자(local:/remote:/market:). 동일 이름 캐시가 여러 개일 때 모호성 해소용 필수"),
           targetDir: z.string().optional().describe("설치 대상 .claude 루트(기본 ~/.claude). 프로젝트-로컬 설치 시 지정"),
         }), annotations: EDIT,
       },
-      run: async (a: { category: string; path: string; lib?: string; targetDir?: string }) => {
-        // --target 은 부모 파서 옵션이라 subcommand 앞에 와야 argparse 가 인식(--lib 는 install 서브파서 옵션).
+      run: async (a: { category: string; path: string; lib?: string; origin?: string; targetDir?: string }) => {
+        // --target 은 부모 파서 옵션이라 subcommand 앞에 와야 argparse 가 인식(--lib/--origin 은 install 서브파서 옵션).
         const args: string[] = [];
         if (a.targetDir) args.push("--target", a.targetDir);
         args.push("install", a.category, a.path);
         if (a.lib) args.push("--lib", a.lib);
+        if (a.origin) args.push("--origin", a.origin);
         return jsonResult(await runPy("library.py", args));
       },
     },
@@ -446,17 +448,19 @@ export function buildTools(scriptDir: string): ToolDef[] {
       name: "library_uninstall",
       meta: {
         title: "Uninstall Library Item",
-        description: "대상 .claude(기본 ~/.claude, targetDir 로 프로젝트-로컬 지정)의 해당 항목을 .trash 로 이동(복구 가능). 라이브러리 원본은 건드리지 않음",
+        description: "대상 .claude(기본 ~/.claude, targetDir 로 프로젝트-로컬 지정)의 해당 항목을 .trash 로 이동(복구 가능). 라이브러리 원본은 건드리지 않음. origin 지정 시 원장의 소유자와 다르면 거부(다른 출처의 설치를 지우지 않음)",
         inputSchema: z.object({
           category: z.enum(["agents", "skills", "commands"]),
           name: z.string(),
+          origin: z.string().optional().describe("요청 출처. 원장의 소유자와 다르면 거부"),
           targetDir: z.string().optional().describe("제거 대상 .claude 루트(기본 ~/.claude)"),
         }), annotations: EDIT,
       },
-      run: async (a: { category: string; name: string; targetDir?: string }) => {
+      run: async (a: { category: string; name: string; origin?: string; targetDir?: string }) => {
         const args: string[] = [];
         if (a.targetDir) args.push("--target", a.targetDir);
         args.push("uninstall", a.category, a.name);
+        if (a.origin) args.push("--origin", a.origin);
         return jsonResult(await runPy("library.py", args));
       },
     },
@@ -470,6 +474,26 @@ export function buildTools(scriptDir: string): ToolDef[] {
       },
       run: async (a: { lib: string }) =>
         jsonResult(await runPy("library.py", ["unregister", "--lib", a.lib])),
+    },
+    {
+      name: "library_remote_add",
+      meta: {
+        title: "Add Remote Library (git)",
+        description: "임의 git 레포를 라이브러리로 등록. clone 후 agents/skills/commands 레이아웃을 대소문자 무시로 탐지하고 store/config.json 의 remotes[] 에 영속화한다. **네트워크를 탄다** — library_scan 은 타지 않으므로 등록 후 scan 은 캐시만 읽는다. 고정 sha 를 기록하며 자동 pull 은 없다",
+        inputSchema: z.object({
+          url: z.string().describe("git 레포 URL(https/ssh/file). config-monitor 는 이 URL 을 심사하지 않는다"),
+          ref: z.string().optional().describe("브랜치/태그. 생략 시 기본 HEAD"),
+          id: z.string().optional().describe("라이브러리 id. 생략 시 URL 의 레포명에서 파생"),
+          map: z.string().optional().describe('레이아웃 매핑 JSON, 예: {"agents":"Agents","skills":"Skills"}. 탐지 실패 시에만 필요'),
+        }), annotations: EDIT,
+      },
+      run: async (a: { url: string; ref?: string; id?: string; map?: string }) => {
+        const args = ["remote-add", "--url", a.url];
+        if (a.ref) args.push("--ref", a.ref);
+        if (a.id) args.push("--id", a.id);
+        if (a.map) args.push("--map", a.map);
+        return jsonResult(await runPy("library.py", args));
+      },
     },
 
     // ----- 브라우저 열기 -----
