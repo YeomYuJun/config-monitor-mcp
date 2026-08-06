@@ -12,6 +12,8 @@ As you accumulate skills, MCP servers, hooks, and agents — plus a separate `.c
 
 Every change is reversible by design. Edits take an automatic snapshot before they run, and overwrites or deletes are backed up first (`.bak` for files, `.trash` for folders), so you can always get the previous state back.
 
+Sources can be local folders, remote git repos, or plugin marketplaces. Remote ones are cached locally and pinned to a commit, so the same snapshot, diff, and rollback machinery applies to them unchanged — and nothing is fetched or updated unless you ask for it.
+
 ## Table of Contents
 
 - [About This Project](#about-this-project)
@@ -24,10 +26,12 @@ Every change is reversible by design. Edits take an automatic snapshot before th
   - [Tracked Files](#tracked-files)
   - [Config](#config)
   - [Library](#library)
+    - [Remote libraries](#remote-libraries)
+    - [Marketplaces](#marketplaces)
+    - [Hooks and MCP servers](#hooks-and-mcp-servers)
   - [History / Diff](#history--diff)
   - [Safety](#safety)
 - [What It Reads](#what-it-reads)
-- [Troubleshooting](#troubleshooting)
 - [Notes](#notes)
 
 ## Simple Usage
@@ -41,7 +45,10 @@ Cowork supports both inline and fullscreen; Code supports inline only (following
 - **One view across sources** — Claude Code, Claude Desktop, and each tracked project side by side, with scope badges (`global` / `project`).
 - **Snapshots & diffs** — track any config file, browse its snapshot timeline, compare two versions, and restore an earlier one.
 - **Direct editing, global or per-project** — add or remove `allow` / `deny` / `ask` permissions, hooks, and MCP servers; scaffold or remove skills and agents. A project-scoped card always edits that project's own `.claude/`, never the global one.
-- **Library install** — install/remove a local library (agents / commands / skills) into the global config or a specific project. Additive, not an overwrite, so existing settings stay intact.
+- **Library install** — install/remove a library (agents / commands / skills) into the global config or a specific project. Additive, not an overwrite, so existing settings stay intact.
+- **Remote libraries & marketplaces** — register any git repo as a library, or a repo carrying `.claude-plugin/marketplace.json` as a browsable catalog. Plugins are fetched one at a time, pinned to a commit, and only then join the Library.
+- **Hooks & MCP servers from plugins** — install a plugin's hooks into `settings.json` and its MCP servers into Claude Code or Claude Desktop, with the exact commands shown for approval first.
+- **Provenance tracking** — the dashboard records which source owns each installed item, so a second plugin shipping the same name shows as `conflict` instead of silently overwriting the first.
 - **Override badges** — when two items share a name, the one that is *not* actually applied is flagged, following the real precedence rules (project wins for agents, global wins for skills).
 - **Reversible by default** — auto-snapshot before every edit; `.bak` / `.trash` backups before every overwrite or delete.
 
@@ -50,6 +57,7 @@ Cowork supports both inline and fullscreen; Code supports inline only (following
 - **Node.js** (LTS) — verify with `node -v`
 - **Python 3.10+** on `PATH` — verify with `python --version`
 - **Windows** with **Claude Desktop** — the widget probes Windows desktop config paths and the file watcher runs on PowerShell.
+- **git** on `PATH` — only for remote libraries and marketplaces. Everything else works without it, and the Library panel keeps working offline either way.
 
 ## Setup
 
@@ -118,9 +126,31 @@ A project card carries its own target path, so removing a project skill or agent
 
 <img src="/assets/img/library-section.png" width="600" alt="Library panel">
 
-A library is any directory shaped like `.claude` (with `agents/`, `commands/`, and/or `skills/`). This panel installs its items into a real config, with a status badge per item: `not installed`, `installed`, or `changed` (the library was updated and can be synced) — compared by **content hash**, not by name.
+A library is any directory shaped like `.claude` (with `agents/`, `commands/`, and/or `skills/`). This panel installs its items into a real config, with a status badge per item: `not installed`, `installed`, `changed` (the library was updated and can be synced), or `conflict` — compared by **content hash**, not by name.
 
 Pick an **install target** (`global (~/.claude)` or a tracked project), then install items individually, in bulk, or by skills-tree group. Each item offers **install** / **sync** (backup before overwrite) / **remove** (move to `.trash`). Library paths marked `ENV` come from `CLAUDE_CONFIG_LIBRARIES` and can't be removed from the dashboard.
+
+**`conflict`** appears when an item's name is already installed but came from a *different* source. Without this the second source would read as `changed`, and syncing it would quietly overwrite the first — a real risk once a marketplace is in play, where name collisions already exist among bundled plugins. A conflicting item offers **overwrite** (with the current owner shown) instead of **sync**, and removing an item you don't own is refused.
+
+#### Remote libraries
+
+Register a git repo directly and it behaves exactly like a local one. The repo is cloned into a cache under `CLAUDE_SNAPSHOT_STORE` and that cache becomes the library root, so install, sync, diff, and rollback all work unchanged. Layout is auto-detected and matched case-insensitively, so a repo using `Agents/` and `Skills/` is picked up as-is.
+
+Registration is persistent, but **nothing is ever fetched automatically**. The chip shows the pinned short commit and how long ago it was fetched; updates happen only when you press refresh. For hooks, that matters — an automatic pull would silently change code that runs every session.
+
+#### Marketplaces
+
+A repo containing `.claude-plugin/marketplace.json` registers as a catalog instead. Only the manifest is checked out up front (~340 KB for the official marketplace's 278 plugins, versus ~9.7 MB for the whole repo), and the catalog is browsable offline with search and category filters.
+
+Fetching is per-plugin and explicit. Only fetched plugins join the Library panel; the rest stay in the catalog. There is deliberately no "installable items" count in the catalog — barely any manifest entries declare their components, so the number simply isn't knowable before fetching, and showing a guess would be worse than showing nothing.
+
+#### Hooks and MCP servers
+
+Plugins can also carry hooks and MCP servers. These aren't copied into `~/.claude` like skills are: some plugins reference files that sit *beside* their `hooks/` folder, so the whole plugin root stays in the cache and the config points at it. That makes the cache load-bearing, which is why unregistering a source is refused while installed hooks still reference it — the dashboard tells you what's holding it rather than breaking your config.
+
+Because installing a hook means arbitrary code runs every session, the confirmation step shows the **exact commands** that will be written, with the cache path already substituted in. Interpreters that won't actually run are flagged — on Windows, `python3` commonly resolves to a Microsoft Store alias stub that is found on `PATH` but fails on execution. That's shown as a warning, never a block.
+
+MCP servers can target Claude Code or **Claude Desktop**. Desktop has no plugin marketplace of its own, so this is currently the only way to get a plugin's MCP server into it.
 
 ### History / Diff
 
@@ -169,20 +199,13 @@ When a project is tracked, the Permissions / Hooks / Skills / Agents / Commands 
 - `skills` is read one level deep; `agents` and `commands` recurse into subfolders (nested items are view-only, global and project alike, because the remove operation takes a single-segment name).
 - **Commands** and a project's **`.mcp.json`** are shown but read-only at every scope — no remove operation exists for them yet.
 - The `＋ new skill` / `＋ new agent` scaffold cards are global-only; to add one to a project, install it from the Library panel.
+- Remote sources are never fetched automatically — registration persists, but updates are always an explicit refresh.
+- Keep `CLAUDE_SNAPSHOT_STORE` short. Marketplace plugins nest a few levels deep inside it, and Windows still caps most paths at 260 characters; a deep store can leave a plugin fetched but unreadable. That case is reported rather than silently counted as zero items.
 - Project cards are capped at 20.
 - Long values are truncated — descriptions at 600 chars, everything else at 160.
 - Only what appears as a card is editable; keys that aren't parsed can't be changed from the dashboard.
 
 </details>
-
-## Troubleshooting
-
-- **Widget doesn't appear** → run `npm run build` again.
-- **`npm run build` fails with `No matching HTML proxy module found`** → a known transient Vite fault; just run it again.
-- **`CONFIG_MONITOR_LANG` seems ignored** → it is read by the MCP server process, so restart Claude Desktop after editing `env`. In the browser, remember the variable overrides a remembered KO / EN choice, not the other way around.
-- **`python` not found** (only `py` works) → add `"CONFIG_MONITOR_PYTHON": "py"` (or the full `python.exe` path) to the `env` block.
-- **Snapshot / restore errors** → check the `CLAUDE_SNAPSHOT_STORE` path (defaults to `D:\.claude-snapshot`).
-- **Watcher won't toggle** → run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once.
 
 ## Notes
 
