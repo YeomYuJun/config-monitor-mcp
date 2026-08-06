@@ -580,6 +580,82 @@ export function buildTools(scriptDir: string): ToolDef[] {
       run: async (a: { origin: string }) =>
         jsonResult(await runPy("library.py", ["fetch", "--origin", a.origin])),
     },
+    {
+      name: "library_hooks_install",
+      meta: {
+        title: "Install Plugin Hooks",
+        description: "플러그인의 hooks/hooks.json 을 settings.json 에 병합한다. ${CLAUDE_PLUGIN_ROOT} 를 절대 캐시 경로로 치환하므로 **캐시는 지우면 안 된다**(load-bearing). matcher·timeout 을 그대로 보존하고 같은 플러그인의 기존 엔트리는 먼저 걷어낸다(멱등). **네트워크를 타지 않는다** — 미물질화 플러그인이면 거부하고 fetch 를 먼저 요구한다. dryRun 으로 치환된 명령 원문과 인터프리터 경고를 먼저 확인할 것",
+        inputSchema: z.object({
+          origin: z.string().describe("remote:<id> | market:<id>/<plugin>"),
+          settings: z.string().optional().describe("대상 settings.json(기본 <targetDir>/settings.json)"),
+          targetDir: z.string().optional(),
+          dryRun: z.boolean().optional().describe("쓰지 않고 치환된 명령·경고만 반환"),
+        }), annotations: EDIT,
+      },
+      run: async (a: { origin: string; settings?: string; targetDir?: string; dryRun?: boolean }) => {
+        const args: string[] = [];
+        if (a.targetDir) args.push("--target", a.targetDir);
+        args.push("hooks-install", "--origin", a.origin);
+        if (a.settings) args.push("--settings", a.settings);
+        if (a.dryRun) args.push("--dry-run");
+        return jsonResult(await runPy("library.py", args));
+      },
+    },
+    {
+      name: "library_hooks_uninstall",
+      meta: {
+        title: "Uninstall Plugin Hooks",
+        description: "settings.json 에서 이 플러그인의 hook 엔트리를 걷어낸다. needle 은 원장에 기록된 root 라 sha 가 바뀐 뒤에도 정확하다. 캐시 디렉토리는 지우지 않는다(다른 항목이 참조할 수 있음)",
+        inputSchema: z.object({
+          origin: z.string(), settings: z.string().optional(), targetDir: z.string().optional(),
+        }), annotations: EDIT,
+      },
+      run: async (a: { origin: string; settings?: string; targetDir?: string }) => {
+        const args: string[] = [];
+        if (a.targetDir) args.push("--target", a.targetDir);
+        args.push("hooks-uninstall", "--origin", a.origin);
+        if (a.settings) args.push("--settings", a.settings);
+        return jsonResult(await runPy("library.py", args));
+      },
+    },
+    {
+      name: "library_mcp_install",
+      meta: {
+        title: "Install Plugin MCP Servers",
+        description: "플러그인의 .mcp.json 서버를 설치. scope=user 는 ~/.claude.json, scope=desktop 은 claude_desktop_config.json(Desktop 재시작 필요). **Claude Desktop 에는 /plugin 마켓플레이스가 없어서 플러그인의 MCP 서버를 Desktop 에 꽂는 경로는 이것뿐이다.** ${CLAUDE_PLUGIN_ROOT} 치환은 hooks 와 동일. **네트워크를 타지 않는다** — 미물질화면 거부",
+        inputSchema: z.object({
+          origin: z.string(), server: z.string().optional().describe("생략 시 전부"),
+          scope: z.enum(["user", "desktop"]).optional(), targetDir: z.string().optional(),
+          dryRun: z.boolean().optional(),
+        }), annotations: EDIT,
+      },
+      run: async (a: { origin: string; server?: string; scope?: string; targetDir?: string; dryRun?: boolean }) => {
+        const args: string[] = [];
+        if (a.targetDir) args.push("--target", a.targetDir);
+        args.push("mcp-install", "--origin", a.origin, "--scope", a.scope || "user");
+        if (a.server) args.push("--server", a.server);
+        if (a.dryRun) args.push("--dry-run");
+        return jsonResult(await runPy("library.py", args));
+      },
+    },
+    {
+      name: "library_mcp_uninstall",
+      meta: {
+        title: "Uninstall Plugin MCP Servers",
+        description: "원장에 기록된 서버 이름만 제거한다. 사용자가 직접 넣은 동명 서버는 건드리지 않는다",
+        inputSchema: z.object({
+          origin: z.string(), server: z.string().optional(),
+          scope: z.enum(["user", "desktop"]).optional(), targetDir: z.string().optional(),
+        }), annotations: EDIT,
+      },
+      run: async (a: { origin: string; server?: string; scope?: string; targetDir?: string }) => {
+        const args: string[] = [];
+        if (a.targetDir) args.push("--target", a.targetDir);
+        args.push("mcp-uninstall", "--origin", a.origin, "--scope", a.scope || "user");
+        if (a.server) args.push("--server", a.server);
+        return jsonResult(await runPy("library.py", args));
+      },
+    },
 
     // ----- 브라우저 열기 -----
     {

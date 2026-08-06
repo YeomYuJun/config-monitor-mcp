@@ -80,6 +80,10 @@ const I18N: Record<string, Record<string, string>> = {
     catFetched: "가져옴", catEmpty: "등록된 마켓플레이스 없음", catMore: "더 보기",
     catMarketAdd: "마켓 등록", catMarketUrlPlaceholder: "마켓 레포 URL (marketplace.json 보유)",
     catCount: "개",
+    unitHooks: "hooks", unitMcp: "MCP", unitInstall: "설치", unitRemove: "제거",
+    unitConfirm: "설치 확정 — 매 세션 실행됨", unitFetchFirst: "가져오기 먼저",
+    unitInterpWarn: "없음", unitInterpStub: "스텁(실행 실패)",
+    unitCmdTitle: "설치될 명령(치환 완료)", unitScopeUser: "user", unitScopeDesktop: "desktop",
   },
   en: {
     newFile: "New", modified: "Modified", deleted: "Deleted", unchanged: "Same",
@@ -139,6 +143,10 @@ const I18N: Record<string, Record<string, string>> = {
     catFetched: "Fetched", catEmpty: "No marketplace registered", catMore: "Load more",
     catMarketAdd: "Add marketplace", catMarketUrlPlaceholder: "Marketplace repo URL (has marketplace.json)",
     catCount: "",
+    unitHooks: "hooks", unitMcp: "MCP", unitInstall: "Install", unitRemove: "Remove",
+    unitConfirm: "Confirm — runs every session", unitFetchFirst: "Fetch first",
+    unitInterpWarn: "missing", unitInterpStub: "stub (fails to run)",
+    unitCmdTitle: "Commands to install (substituted)", unitScopeUser: "user", unitScopeDesktop: "desktop",
   },
 };
 
@@ -1033,6 +1041,50 @@ function buildTargetBar(allItems: any[]): HTMLElement {
   return bar;
 }
 
+// hooks/MCP 는 캐시 경로를 참조하는 복합 유닛이라 항목 행이 아니라 라이브러리 칩에 붙는다.
+// 설치 = 매 세션 임의 코드 실행이므로 dryRun 으로 명령 원문을 먼저 보여주고 확인받는다.
+function mkUnitActions(l: any): HTMLElement {
+  const box = document.createElement("span");
+  const mk = (label: string, kind: "hooks" | "mcp") => {
+    const b = document.createElement("button");
+    b.className = "addbtn";
+    b.textContent = label;
+    let confirmed = false;
+    b.addEventListener("click", async () => {
+      const tool = kind === "hooks" ? "library_hooks_install" : "library_mcp_install";
+      if (!confirmed) {
+        b.textContent = "…";
+        try {
+          const dry = jparse(await callTool(tool, { origin: l.origin, dryRun: true }));
+          if (dry && dry.ok === false) { flashToast(dry.message || t("failed")); b.textContent = label; return; }
+          const cmds: string[] = dry?.commands || (dry?.servers || []);
+          const warns: any[] = dry?.warnings || [];
+          const warnTxt = warns.map((w) =>
+            `${w.interp}: ${w.reason === "stub" ? t("unitInterpStub") : t("unitInterpWarn")}`).join(" · ");
+          b.title = `${t("unitCmdTitle")}\n${cmds.join("\n")}` + (warnTxt ? `\n\n⚠ ${warnTxt}` : "");
+          if (warnTxt) flashToast("⚠ " + warnTxt);
+          b.textContent = t("unitConfirm");
+          confirmed = true;
+        } catch (e) { b.textContent = t("failed"); console.error("[config-monitor] unit dry-run", e); }
+        return;
+      }
+      b.textContent = "…";
+      try {
+        const r = jparse(await callTool(tool, { origin: l.origin }));
+        if (r && r.ok === false) { flashToast(r.message || t("failed")); b.textContent = label; confirmed = false; return; }
+        // 백엔드가 warning 을 담아 보내면(예: 스토어 미초기화로 출처를 기록 못함) 성공 메시지에 묻혀
+        // 사라지면 안 된다 - "성공했지만 알아둬야 할 것" 을 그대로 보여준다.
+        flashToast(r?.warning ? `${r?.message || t("done")} ⚠ ${r.warning}` : (r?.message || t("done")));
+        await refresh();
+      } catch (e) { b.textContent = t("failed"); console.error("[config-monitor] unit install", e); }
+    });
+    return b;
+  };
+  if (l.has_hooks) box.appendChild(mk(`${t("unitHooks")} ${t("unitInstall")}`, "hooks"));
+  if (l.has_mcp) box.appendChild(mk(`${t("unitMcp")} ${t("unitInstall")}`, "mcp"));
+  return box;
+}
+
 function renderLibrary(host: HTMLElement, res: any): void {
   const secEl = document.createElement("div");
   secEl.className = "sec" + (collapsed.has("Library") ? " collapsed" : "");
@@ -1138,6 +1190,7 @@ function renderLibrary(host: HTMLElement, res: any): void {
         } catch (e) { flashToast(t("failed")); console.error("[config-monitor] lib unregister", e); chip.replaceWith(mkPathChip(l)); }
       });
     });
+    if (l.has_hooks || l.has_mcp) chip.appendChild(mkUnitActions(l));
     chip.appendChild(x);
     return chip;
   };
@@ -1244,7 +1297,10 @@ async function renderCatalog(host: HTMLElement): Promise<void> {
           const rr = jparse(await callTool("library_plugin_fetch",
             { marketplace: row.marketplace, plugin: row.name }));
           if (rr && rr.ok === false) { flashToast(rr.message || t("failed")); b.textContent = t("catFetch"); return; }
-          flashToast(`${rr?.message || t("done")} · ${row.name}`);
+          // components_failed 가 있으면 개수는 "모름"이지 "0개"가 아니다 - warning 을 성공 메시지에
+          // 묻어 버리면 "가져왔는데 텅 빔" 처럼 보인다(사실은 "가져왔는데 일부를 못 읽음").
+          flashToast(rr?.warning ? `${rr?.message || t("done")} · ${row.name} ⚠ ${rr.warning}`
+            : `${rr?.message || t("done")} · ${row.name}`);
           await refresh();
         } catch (e) { flashToast(t("failed")); b.textContent = t("failed"); console.error("[config-monitor] plugin fetch", e); }
       });

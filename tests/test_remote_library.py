@@ -1391,3 +1391,686 @@ class FetchAndUnregister(RemoteAdd):
         run(CAS, "--store", self.store, "init")
         rc, out, err = self.libcmd("fetch", "--origin", "remote:nope")
         self.assertFalse(json.loads(out)["ok"])
+
+
+class Substitution(unittest.TestCase):
+    """${CLAUDE_PLUGIN_ROOT} 치환. 픽스처는 hooks/ 바깥 참조 2건을 재현한다."""
+
+    HOOKS = {
+        "description": "test hooks",
+        "hooks": {
+            "SessionStart": [{"hooks": [{"type": "command",
+                "command": 'bash "${CLAUDE_PLUGIN_ROOT}/hooks-handlers/session-start.sh"'}]}],
+            "PostToolUse": [{"matcher": "Edit|Write", "hooks": [{"type": "command",
+                "command": 'python3 "${CLAUDE_PLUGIN_ROOT}/hooks/post.py"', "timeout": 10}]}],
+        },
+    }
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="subst_test_")
+        self.root = os.path.join(self.tmp, "plugins", "sg", "abc123")
+        os.makedirs(os.path.join(self.root, "hooks"))
+        os.makedirs(os.path.join(self.root, "hooks-handlers"))
+        with open(os.path.join(self.root, "hooks", "hooks.json"), "w", encoding="utf-8") as f:
+            json.dump(self.HOOKS, f)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_substitute_replaces_in_nested_structures(self):
+        import plugin_units
+        got = plugin_units.substitute(self.HOOKS, self.root)
+        cmd = got["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        self.assertIn(self.root, cmd)
+        self.assertNotIn("${CLAUDE_PLUGIN_ROOT}", json.dumps(got, ensure_ascii=False))
+
+    def test_substitute_does_not_mutate_input(self):
+        import plugin_units
+        plugin_units.substitute(self.HOOKS, self.root)
+        self.assertIn("${CLAUDE_PLUGIN_ROOT}",
+                      self.HOOKS["hooks"]["SessionStart"][0]["hooks"][0]["command"])
+
+    def test_substitute_preserves_matcher_and_timeout(self):
+        import plugin_units
+        got = plugin_units.substitute(self.HOOKS, self.root)
+        e = got["hooks"]["PostToolUse"][0]
+        self.assertEqual(e["matcher"], "Edit|Write")
+        self.assertEqual(e["hooks"][0]["timeout"], 10)
+
+    def test_sibling_directory_reference_survives(self):
+        # hooks/ 만 복사하면 깨지는 실물 2건의 재현. 플러그인 루트 전체가 설치 단위인 근거.
+        import plugin_units
+        got = plugin_units.substitute(self.HOOKS, self.root)
+        cmd = got["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        ref = cmd.split('"')[1]
+        self.assertTrue(os.path.isdir(os.path.dirname(ref)), f"참조 대상이 실재해야 한다: {ref}")
+
+    def test_hook_commands_are_read_from_parsed_json_not_regex(self):
+        # 정규식 '"command"\s*:\s*"([^"]+)"' 은 이스케이프된 \" 에서 잘려 0건을 낸다.
+        import re, plugin_units
+        cfg = plugin_units.load_hooks_json(self.root)
+        cmds = plugin_units.hook_commands(cfg)
+        self.assertEqual(len(cmds), 2)
+        serialized = json.dumps(cfg, ensure_ascii=False)
+        regex_hits = re.findall(r'"command"\s*:\s*"([^"]+)"', serialized)
+        self.assertNotEqual(regex_hits, cmds,
+                            "이 픽스처는 정규식이 오답을 내는 케이스여야 의미가 있다")
+
+    def test_load_hooks_json_returns_none_when_absent(self):
+        import plugin_units
+        self.assertIsNone(plugin_units.load_hooks_json(os.path.join(self.tmp, "nope")))
+
+
+class HooksMerge(Substitution):
+    """hooks 병합 멱등성 + sha 변경 케이스. 문자열 매칭이면 Windows 에서 전부 실패한다."""
+
+    def test_windows_path_matching_is_not_string_based(self):
+        # 이 테스트가 op_hook_remove 재사용을 막는 이유다.
+        import plugin_units
+        root = "D:\\cache\\plugins\\sg\\abc123" if os.name == "nt" else "/c/plugins/sg/abc123"
+        entry = {"matcher": "*", "hooks": [{"type": "command",
+                 "command": 'bash "' + root + '/hooks/run.sh"'}]}
+        self.assertTrue(plugin_units.entry_refs_root(entry, root))
+        # 직렬화 매칭이었다면 여기서 False 가 나왔을 것(Windows 에서 \ -> \\ 이스케이프)
+        if os.name == "nt":
+            self.assertNotIn(root, json.dumps(entry, ensure_ascii=False))
+
+    def test_entry_refs_root_does_not_match_a_different_plugin(self):
+        import plugin_units
+        entry = {"hooks": [{"type": "command", "command": 'bash "' + self.root + '/hooks/x.sh"'}]}
+        other = os.path.join(self.tmp, "plugins", "other", "def456")
+        self.assertFalse(plugin_units.entry_refs_root(entry, other))
+
+    def test_entry_refs_root_ignores_case_and_separators(self):
+        import plugin_units
+        entry = {"hooks": [{"type": "command",
+                 "command": 'bash "' + self.root.replace("\\", "/") + '/hooks/x.sh"'}]}
+        self.assertTrue(plugin_units.entry_refs_root(entry, self.root))
+
+    def test_merge_twice_does_not_duplicate(self):
+        import plugin_units
+        cfg = plugin_units.load_hooks_json(self.root)
+        s, _, added1 = plugin_units.hooks_merge({}, cfg, self.root, None)
+        s, removed2, added2 = plugin_units.hooks_merge(s, cfg, self.root, self.root)
+        self.assertEqual(added1, 2)
+        self.assertEqual(removed2, 2)                  # 자기 엔트리를 먼저 걷어낸다
+        self.assertEqual(len(s["hooks"]["SessionStart"]), 1)
+        self.assertEqual(len(s["hooks"]["PostToolUse"]), 1)
+
+    def test_sha_change_removes_old_root_entries(self):
+        # 갱신 멱등성의 핵심. needle 은 원장의 옛 root 이지 새 캐시 경로가 아니다.
+        import plugin_units
+        cfg = plugin_units.load_hooks_json(self.root)
+        s, _, _ = plugin_units.hooks_merge({}, cfg, self.root, None)
+        new_root = os.path.join(self.tmp, "plugins", "sg", "def456")
+        s, removed, added = plugin_units.hooks_merge(s, cfg, new_root, self.root)
+        self.assertEqual(removed, 2)
+        self.assertEqual(len(s["hooks"]["SessionStart"]), 1)
+        cmd = s["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        self.assertIn(new_root, cmd)
+        self.assertNotIn(self.root, cmd)
+
+    def test_merge_preserves_unrelated_user_hooks(self):
+        import plugin_units
+        mine = {"matcher": "*", "hooks": [{"type": "command", "command": "echo mine"}]}
+        s = {"hooks": {"SessionStart": [mine]}}
+        cfg = plugin_units.load_hooks_json(self.root)
+        s, removed, _ = plugin_units.hooks_merge(s, cfg, self.root, None)
+        self.assertEqual(removed, 0)
+        self.assertIn(mine, s["hooks"]["SessionStart"])
+        self.assertEqual(len(s["hooks"]["SessionStart"]), 2)
+
+    def test_remove_leaves_empty_event_key_absent(self):
+        import plugin_units
+        cfg = plugin_units.load_hooks_json(self.root)
+        s, _, _ = plugin_units.hooks_merge({}, cfg, self.root, None)
+        s, removed = plugin_units.hooks_remove(s, self.root)
+        self.assertEqual(removed, 2)
+        self.assertNotIn("SessionStart", s.get("hooks", {}))   # 빈 배열을 남기지 않는다
+
+    def test_remove_is_idempotent(self):
+        import plugin_units
+        cfg = plugin_units.load_hooks_json(self.root)
+        s, _, _ = plugin_units.hooks_merge({}, cfg, self.root, None)
+        s, _ = plugin_units.hooks_remove(s, self.root)
+        s, again = plugin_units.hooks_remove(s, self.root)
+        self.assertEqual(again, 0)
+
+
+class InterpreterCheck(unittest.TestCase):
+    """인터프리터 사전 점검: 없음 / WindowsApps 스텁 / 정상. 차단이 아니라 경고다."""
+
+    def test_first_token_handles_quotes_and_paths(self):
+        import plugin_units
+        self.assertEqual(plugin_units.first_token('bash "${X}/a.sh"'), "bash")
+        self.assertEqual(plugin_units.first_token('python3 "${X}/p.py" --flag'), "python3")
+        self.assertEqual(plugin_units.first_token('"C:/Program Files/x/y.exe" a'), "C:/Program Files/x/y.exe")
+        self.assertEqual(plugin_units.first_token(""), "")
+
+    def test_missing_interpreter_is_flagged(self):
+        import plugin_units
+        r = plugin_units.check_interpreter("nosuchinterp x", which=lambda n: None)
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["reason"], "missing")
+
+    def test_windowsapps_stub_is_flagged_even_though_which_finds_it(self):
+        # findings §5 실측: python3 는 PATH 에 있는 것처럼 보이지만 실행이 실패한다.
+        # shutil.which 만으로는 못 거른다.
+        import plugin_units
+        stub = "C:\\Users\\u\\AppData\\Local\\Microsoft\\WindowsApps\\python3.exe"
+        r = plugin_units.check_interpreter('python3 "${X}/p.py"', which=lambda n: stub)
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["reason"], "stub")
+        self.assertEqual(r["interp"], "python3")
+
+    def test_real_interpreter_passes(self):
+        import plugin_units
+        r = plugin_units.check_interpreter("bash x.sh", which=lambda n: "/usr/bin/bash")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["reason"], "")
+
+    def test_warnings_collect_only_problems(self):
+        import plugin_units
+        cfg = {"hooks": {"S": [{"hooks": [
+            {"type": "command", "command": "bash a.sh"},
+            {"type": "command", "command": "python3 b.py"},
+        ]}]}}
+        stub = "C:\\WindowsApps\\python3.exe"
+        w = plugin_units.interpreter_warnings(
+            cfg, which=lambda n: stub if n == "python3" else "/usr/bin/" + n)
+        self.assertEqual([x["interp"] for x in w], ["python3"])
+        self.assertEqual(w[0]["reason"], "stub")
+
+
+class HooksInstall(unittest.TestCase):
+    """hooks 설치: 캐시를 참조하는 엔트리를 settings 에 병합. 캐시는 load-bearing 이 된다."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="hooksinst_test_")
+        self.store = os.path.join(self.tmp, "store")
+        self.target = os.path.join(self.tmp, "live")
+        os.makedirs(self.target)
+        self.settings = os.path.join(self.target, "settings.json")
+        with open(self.settings, "w", encoding="utf-8") as f:
+            json.dump({"permissions": {"allow": ["Bash(ls:*)"]}}, f)
+        self.root = os.path.join(self.tmp, "cache", "plugins", "sg", "abc123")
+        os.makedirs(os.path.join(self.root, "hooks"))
+        os.makedirs(os.path.join(self.root, "hooks-handlers"))
+        with open(os.path.join(self.root, "hooks", "hooks.json"), "w", encoding="utf-8") as f:
+            json.dump({"hooks": {"SessionStart": [{"hooks": [{"type": "command",
+                       "command": 'bash "${CLAUDE_PLUGIN_ROOT}/hooks-handlers/s.sh"',
+                       "timeout": 5}]}]}}, f)
+        run(CAS, "--store", self.store, "init")
+        import lib_store
+        cfg = lib_store.load_cfg(self.store)
+        cfg["marketplaces"] = [{"id": "mk", "url": "u", "cache": os.path.join(self.tmp, "repo"),
+                                "plugins": [{"name": "sg", "sha": "abc123", "cache": self.root}]}]
+        lib_store.save_cfg(self.store, cfg)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def libcmd(self, *args):
+        return run(LIB, "--store", self.store, "--target", self.target, "--no-snapshot", *args)
+
+    def _settings(self):
+        with open(self.settings, encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_install_merges_entry_with_absolute_cache_path(self):
+        rc, out, err = self.libcmd("hooks-install", "--origin", "market:mk/sg",
+                                   "--settings", self.settings)
+        self.assertEqual(rc, 0, err)
+        res = json.loads(out)
+        self.assertTrue(res["ok"])
+        s = self._settings()
+        cmd = s["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        self.assertIn(self.root, cmd)
+        self.assertNotIn("${CLAUDE_PLUGIN_ROOT}", cmd)
+        self.assertEqual(s["hooks"]["SessionStart"][0]["hooks"][0]["timeout"], 5)
+        self.assertEqual(s["permissions"]["allow"], ["Bash(ls:*)"])   # 기존 키 보존
+
+    def test_install_is_idempotent(self):
+        self.libcmd("hooks-install", "--origin", "market:mk/sg", "--settings", self.settings)
+        self.libcmd("hooks-install", "--origin", "market:mk/sg", "--settings", self.settings)
+        self.assertEqual(len(self._settings()["hooks"]["SessionStart"]), 1)
+
+    def test_install_records_root_in_ledger(self):
+        self.libcmd("hooks-install", "--origin", "market:mk/sg", "--settings", self.settings)
+        import lib_store
+        rec = lib_store.ledger_get(lib_store.load_cfg(self.store), self.target, "hooks", "sg")
+        self.assertEqual(rec["kind"], "hooks")
+        self.assertEqual(rec["root"], self.root)
+        self.assertEqual(rec["origin"], "market:mk/sg")
+
+    def test_uninstall_uses_ledger_root_after_sha_change(self):
+        # 갱신 멱등성의 핵심. 캐시가 새 sha 로 옮겨간 뒤에도 옛 엔트리를 정확히 걷어낸다.
+        self.libcmd("hooks-install", "--origin", "market:mk/sg", "--settings", self.settings)
+        new_root = os.path.join(self.tmp, "cache", "plugins", "sg", "def456")
+        shutil.copytree(self.root, new_root)
+        import lib_store
+        cfg = lib_store.load_cfg(self.store)
+        cfg["marketplaces"][0]["plugins"][0].update({"sha": "def456", "cache": new_root})
+        lib_store.save_cfg(self.store, cfg)
+        rc, out, err = self.libcmd("hooks-install", "--origin", "market:mk/sg", "--settings", self.settings)
+        self.assertEqual(rc, 0, err)
+        arr = self._settings()["hooks"]["SessionStart"]
+        self.assertEqual(len(arr), 1, "옛 경로 엔트리가 남으면 중복이 쌓인다")
+        self.assertIn(new_root, arr[0]["hooks"][0]["command"])
+
+    def test_uninstall_removes_entry_and_ledger(self):
+        self.libcmd("hooks-install", "--origin", "market:mk/sg", "--settings", self.settings)
+        rc, out, err = self.libcmd("hooks-uninstall", "--origin", "market:mk/sg", "--settings", self.settings)
+        self.assertEqual(rc, 0, err)
+        s = self._settings()
+        self.assertNotIn("hooks", s)
+        self.assertEqual(s["permissions"]["allow"], ["Bash(ls:*)"])   # 무관 키 보존(uninstall 도 검증)
+        import lib_store
+        self.assertIsNone(lib_store.ledger_get(lib_store.load_cfg(self.store), self.target, "hooks", "sg"))
+
+    def test_install_refuses_unmaterialized_plugin(self):
+        import lib_store
+        cfg = lib_store.load_cfg(self.store)
+        cfg["marketplaces"][0]["plugins"] = []
+        lib_store.save_cfg(self.store, cfg)
+        rc, out, err = self.libcmd("hooks-install", "--origin", "market:mk/sg", "--settings", self.settings)
+        res = json.loads(out)
+        self.assertFalse(res["ok"])
+        self.assertIn("fetch", res["message"])
+
+    def test_install_takes_no_network(self):
+        rc, out, err = run(LIB, "--store", self.store, "--target", self.target, "--no-snapshot",
+                           "hooks-install", "--origin", "market:mk/sg", "--settings", self.settings,
+                           env={"PATH": ""})
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(json.loads(out)["ok"])
+
+    def test_dry_run_returns_commands_and_warnings_without_writing(self):
+        # 설치 = 매 세션 임의 코드 실행. 치환된 명령 원문을 그대로 보여주고 확인받는다.
+        rc, out, err = self.libcmd("hooks-install", "--origin", "market:mk/sg",
+                                   "--settings", self.settings, "--dry-run")
+        self.assertEqual(rc, 0, err)
+        res = json.loads(out)
+        self.assertTrue(res["ok"])
+        self.assertTrue(res["dry_run"])
+        self.assertIn(self.root, res["commands"][0])
+        self.assertIn("warnings", res)
+        self.assertNotIn("hooks", self._settings())     # 쓰지 않았다
+
+
+class McpInstall(HooksInstall):
+    """MCP 서버 설치. scope=user(~/.claude.json) / desktop(claude_desktop_config.json).
+
+    --claude-json/--desktop-config 는 부모 파서 옵션이라 subcommand 앞에 와야 argparse 가
+    인식한다(경험적으로 확인됨 - subcommand 뒤에 두면 "unrecognized arguments" 로 rc=2).
+    libcmd 를 오버라이드해 이 두 플래그를 자동으로 subcommand 앞으로 끌어올린다 - 그래서
+    개별 테스트 메서드는 다른 서브클래스와 같은 모양으로 인자를 나열할 수 있다."""
+
+    def setUp(self):
+        super().setUp()
+        with open(os.path.join(self.root, ".mcp.json"), "w", encoding="utf-8") as f:
+            json.dump({"mcpServers": {
+                "sg-server": {"command": "node",
+                              "args": ["${CLAUDE_PLUGIN_ROOT}/server/index.js"]},
+                "other": {"command": "python", "args": ["${CLAUDE_PLUGIN_ROOT}/o.py"]},
+            }}, f)
+        self.claude_json = os.path.join(self.tmp, "claude.json")
+        with open(self.claude_json, "w", encoding="utf-8") as f:
+            json.dump({"projects": {}}, f)
+
+    def libcmd(self, *args):
+        args = list(args)
+        prefix, rest, i = [], [], 0
+        while i < len(args):
+            if args[i] in ("--claude-json", "--desktop-config") and i + 1 < len(args):
+                prefix += [args[i], args[i + 1]]
+                i += 2
+            else:
+                rest.append(args[i])
+                i += 1
+        return run(LIB, "--store", self.store, "--target", self.target, "--no-snapshot",
+                  *prefix, *rest)
+
+    def _cj(self):
+        with open(self.claude_json, encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_install_substitutes_root_in_args(self):
+        rc, out, err = self.libcmd("mcp-install", "--origin", "market:mk/sg",
+                                   "--claude-json", self.claude_json)
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(json.loads(out)["ok"])
+        srv = self._cj()["mcpServers"]["sg-server"]
+        self.assertIn(self.root, srv["args"][0])
+        self.assertNotIn("${CLAUDE_PLUGIN_ROOT}", json.dumps(srv))
+        self.assertEqual(self._cj()["projects"], {})       # 기존 키 보존
+
+    def test_install_single_server_only(self):
+        self.libcmd("mcp-install", "--origin", "market:mk/sg", "--server", "sg-server",
+                    "--claude-json", self.claude_json)
+        self.assertEqual(list(self._cj()["mcpServers"]), ["sg-server"])
+
+    def test_install_is_idempotent(self):
+        for _ in range(2):
+            self.libcmd("mcp-install", "--origin", "market:mk/sg", "--claude-json", self.claude_json)
+        self.assertEqual(sorted(self._cj()["mcpServers"]), ["other", "sg-server"])
+
+    def test_uninstall_removes_only_this_plugins_servers(self):
+        cj = self._cj(); cj["mcpServers"] = {"mine": {"command": "x"}}
+        with open(self.claude_json, "w", encoding="utf-8") as f:
+            json.dump(cj, f)
+        self.libcmd("mcp-install", "--origin", "market:mk/sg", "--claude-json", self.claude_json)
+        rc, out, err = self.libcmd("mcp-uninstall", "--origin", "market:mk/sg",
+                                   "--claude-json", self.claude_json)
+        self.assertEqual(rc, 0, err)
+        cj2 = self._cj()
+        self.assertEqual(list(cj2["mcpServers"]), ["mine"])
+        self.assertEqual(cj2["projects"], {})               # 무관 키 보존(uninstall 도 검증)
+
+    def test_install_records_ledger_with_server_names(self):
+        self.libcmd("mcp-install", "--origin", "market:mk/sg", "--claude-json", self.claude_json)
+        import lib_store
+        rec = lib_store.ledger_get(lib_store.load_cfg(self.store), self.target, "mcp", "sg")
+        self.assertEqual(rec["kind"], "mcp")
+        self.assertEqual(sorted(rec["servers"]), ["other", "sg-server"])
+        self.assertEqual(rec["root"], self.root)
+
+    def test_install_refuses_unmaterialized(self):
+        import lib_store
+        cfg = lib_store.load_cfg(self.store)
+        cfg["marketplaces"][0]["plugins"] = []
+        lib_store.save_cfg(self.store, cfg)
+        rc, out, err = self.libcmd("mcp-install", "--origin", "market:mk/sg",
+                                   "--claude-json", self.claude_json)
+        self.assertIn("fetch", json.loads(out)["message"])
+
+    def test_dry_run_shows_servers_without_writing(self):
+        rc, out, err = self.libcmd("mcp-install", "--origin", "market:mk/sg",
+                                   "--claude-json", self.claude_json, "--dry-run")
+        res = json.loads(out)
+        self.assertTrue(res["dry_run"])
+        self.assertEqual(sorted(res["servers"]), ["other", "sg-server"])
+        self.assertNotIn("mcpServers", self._cj())
+
+    def test_install_desktop_scope_writes_desktop_config_not_claude_json(self):
+        # scope=desktop 이 실질 가치다 - Claude Desktop 은 /plugin 마켓플레이스가 없어서
+        # 플러그인의 MCP 서버를 Desktop 에 꽂는 경로는 현재 이것뿐이다.
+        desktop_config = os.path.join(self.tmp, "claude_desktop_config.json")
+        with open(desktop_config, "w", encoding="utf-8") as f:
+            json.dump({}, f)
+        rc, out, err = self.libcmd("mcp-install", "--origin", "market:mk/sg", "--scope", "desktop",
+                                   "--claude-json", self.claude_json,
+                                   "--desktop-config", desktop_config)
+        self.assertEqual(rc, 0, err)
+        with open(desktop_config, encoding="utf-8") as f:
+            dcfg = json.load(f)
+        self.assertEqual(sorted(dcfg["mcpServers"]), ["other", "sg-server"])
+        self.assertNotIn("mcpServers", self._cj())          # user scope 파일은 안 건드림
+
+
+class HooksMergeIdempotency(unittest.TestCase):
+    """root 를 참조하지 않는 hook 도 재설치마다 중복 누적되면 안 된다.
+
+    hooks_remove 는 root 를 포함하는 command 만 걷어낼 수 있다. hooks.json 안의 command 가
+    ${CLAUDE_PLUGIN_ROOT} 를 전혀 쓰지 않으면(전역 도구를 그대로 부르는 hook - 유효한 형태다)
+    root 기반 제거로는 절대 못 찾는다. hooks_merge 는 삽입 전에 '이번에 추가하려는 엔트리와
+    구조적으로 동일한' 기존 엔트리도 함께 걷어내야 한다 - root 매칭과는 독립적인 두 번째 메커니즘.
+    """
+
+    HOOKS = {
+        "description": "mixed hooks - root 참조/비참조 혼합",
+        "hooks": {
+            "SessionStart": [],
+            "PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "echo pre"}]}],
+            "Stop": [{"hooks": [{"type": "command", "command": "echo hi"}]}],
+            "PostToolUse": [{"hooks": [{"type": "command",
+                "command": 'bash "${CLAUDE_PLUGIN_ROOT}/hooks/p.sh"'}]}],
+        },
+    }
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="hooksmerge_id_test_")
+        self.root = os.path.join(self.tmp, "plugins", "sg", "abc123")
+        os.makedirs(os.path.join(self.root, "hooks"))
+        with open(os.path.join(self.root, "hooks", "hooks.json"), "w", encoding="utf-8") as f:
+            json.dump(self.HOOKS, f)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_install_three_times_yields_exactly_one_entry_per_event(self):
+        import plugin_units
+        cfg = plugin_units.load_hooks_json(self.root)
+        s = {}
+        for _ in range(3):
+            s, removed, added = plugin_units.hooks_merge(s, cfg, self.root, self.root)
+        self.assertEqual(len(s["hooks"]["PreToolUse"]), 1)
+        self.assertEqual(len(s["hooks"]["Stop"]), 1)
+        self.assertEqual(len(s["hooks"]["PostToolUse"]), 1)
+
+    def test_empty_event_list_does_not_create_key(self):
+        # hooks.json 의 SessionStart 가 빈 배열이면 settings 에도 빈 키를 남기면 안 된다.
+        import plugin_units
+        cfg = plugin_units.load_hooks_json(self.root)
+        s, _, _ = plugin_units.hooks_merge({}, cfg, self.root, None)
+        self.assertNotIn("SessionStart", s.get("hooks", {}))
+
+    def test_user_own_different_hook_survives_repeated_merge(self):
+        # 사용자의 다른 hook(내용이 다름)은 identity 기반 제거에 걸리지 않고 살아남아야 한다.
+        import plugin_units
+        mine = {"hooks": [{"type": "command", "command": "echo mine"}]}
+        s = {"hooks": {"Stop": [mine]}}
+        cfg = plugin_units.load_hooks_json(self.root)
+        for _ in range(3):
+            s, _, _ = plugin_units.hooks_merge(s, cfg, self.root, self.root)
+        self.assertIn(mine, s["hooks"]["Stop"])
+        self.assertEqual(len(s["hooks"]["Stop"]), 2)   # mine 1 + 플러그인 것 1(중복 없음)
+
+    def test_hooks_remove_after_repeated_merge_clears_root_entry_without_duplicates(self):
+        # root 로 추적 가능한 엔트리는 merge 의 identity 중복 방지 덕에 1건만 남고,
+        # hooks_remove 가 그 1건을 온전히 걷어낸다(중복이 쌓였다면 1보다 큰 수가 나왔을 것).
+        import plugin_units
+        cfg = plugin_units.load_hooks_json(self.root)
+        s = {}
+        for _ in range(3):
+            s, _, _ = plugin_units.hooks_merge(s, cfg, self.root, self.root)
+        s, removed = plugin_units.hooks_remove(s, self.root)
+        self.assertEqual(removed, 1)
+        self.assertNotIn("PostToolUse", s.get("hooks", {}))
+
+    def test_sha_change_still_deduplicates_non_root_entries(self):
+        # root 기반 제거(sha 변경 케이스)와 identity 기반 제거(비-root 엔트리)가 함께 작동해야 한다.
+        import plugin_units
+        cfg = plugin_units.load_hooks_json(self.root)
+        s, _, _ = plugin_units.hooks_merge({}, cfg, self.root, None)
+        new_root = os.path.join(self.tmp, "plugins", "sg", "def456")
+        s, removed, added = plugin_units.hooks_merge(s, cfg, new_root, self.root)
+        self.assertEqual(len(s["hooks"]["PostToolUse"]), 1)
+        cmd = s["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+        self.assertIn(new_root, cmd)
+        self.assertNotIn(self.root, cmd)
+        self.assertEqual(len(s["hooks"]["PreToolUse"]), 1)   # root 와 무관하게 identity 로 dedup
+        self.assertEqual(len(s["hooks"]["Stop"]), 1)
+
+
+class NoneInputsAreNoops(unittest.TestCase):
+    """load_hooks_json 이 흔히 돌려주는 None(hooks.json 없음)을 받아도 크래시하지 않는다."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="none_input_test_")
+        self.root = os.path.join(self.tmp, "plugins", "sg", "abc123")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_hooks_merge_none_cfg_is_a_noop(self):
+        import plugin_units
+        s = {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "echo mine"}]}]}}
+        before = json.loads(json.dumps(s))
+        s2, removed, added = plugin_units.hooks_merge(s, None, self.root, None)
+        self.assertEqual((removed, added), (0, 0))
+        self.assertEqual(s2, before)
+
+    def test_hook_commands_none_is_empty_list(self):
+        import plugin_units
+        self.assertEqual(plugin_units.hook_commands(None), [])
+
+    def test_entry_refs_root_none_entry_is_false(self):
+        import plugin_units
+        self.assertFalse(plugin_units.entry_refs_root(None, self.root))
+
+    def test_interpreter_warnings_none_cfg_is_empty_list(self):
+        import plugin_units
+        self.assertEqual(plugin_units.interpreter_warnings(None), [])
+
+
+class HooksUninstallStructural(unittest.TestCase):
+    """hooks-uninstall fix round 1: root 문자열 매칭만으로는 ${CLAUDE_PLUGIN_ROOT} 를 전혀
+    안 쓰는(전역 도구를 직접 부르는) hook 을 못 찾는다. hooks_merge 가 이제 root 매칭 +
+    구조적 동일성 두 메커니즘으로 설치 중복을 막듯, uninstall 도 대칭으로 제거해야 한다."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="hooksuninst_test_")
+        self.store = os.path.join(self.tmp, "store")
+        self.target = os.path.join(self.tmp, "live")
+        os.makedirs(self.target)
+        self.settings = os.path.join(self.target, "settings.json")
+        # settings.json 에 사용자 자신의 Stop hook 을 미리 심는다 - 플러그인 것과 같은
+        # 이벤트에 있지만 내용이 다르므로 uninstall 후에도 살아남아야 한다.
+        with open(self.settings, "w", encoding="utf-8") as f:
+            json.dump({"hooks": {"Stop": [{"matcher": "*",
+                       "hooks": [{"type": "command", "command": "echo user-own"}]}]}}, f)
+        self.root = os.path.join(self.tmp, "cache", "plugins", "sg", "abc123")
+        os.makedirs(os.path.join(self.root, "hooks"))
+        with open(os.path.join(self.root, "hooks", "hooks.json"), "w", encoding="utf-8") as f:
+            json.dump({"hooks": {
+                # root 를 참조하는 엔트리(기존 메커니즘으로도 잡힌다) - 대조군.
+                "PreToolUse": [{"hooks": [{"type": "command",
+                    "command": 'bash "${CLAUDE_PLUGIN_ROOT}/hooks-handlers/pre.sh"'}]}],
+                # root 를 전혀 참조하지 않는 엔트리 - 전역 도구를 직접 부른다.
+                # 이게 finding 1 이 재현하는 케이스: root 매칭으로는 절대 못 찾는다.
+                "Stop": [{"matcher": "*", "hooks": [{"type": "command",
+                    "command": "global-lint-tool --check"}]}],
+            }}, f)
+        run(CAS, "--store", self.store, "init")
+        import lib_store
+        cfg = lib_store.load_cfg(self.store)
+        cfg["marketplaces"] = [{"id": "mk", "url": "u", "cache": os.path.join(self.tmp, "repo"),
+                                "plugins": [{"name": "sg", "sha": "abc123", "cache": self.root}]}]
+        lib_store.save_cfg(self.store, cfg)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def libcmd(self, *args):
+        return run(LIB, "--store", self.store, "--target", self.target, "--no-snapshot", *args)
+
+    def _settings(self):
+        with open(self.settings, encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_uninstall_removes_hook_not_referencing_plugin_root(self):
+        self.libcmd("hooks-install", "--origin", "market:mk/sg", "--settings", self.settings)
+        # 설치 직후: PreToolUse 1건(root 참조), Stop 은 사용자 것 + 플러그인 것 = 2건.
+        before = self._settings()
+        self.assertEqual(len(before["hooks"]["PreToolUse"]), 1)
+        self.assertEqual(len(before["hooks"]["Stop"]), 2)
+
+        rc, out, err = self.libcmd("hooks-uninstall", "--origin", "market:mk/sg",
+                                   "--settings", self.settings)
+        self.assertEqual(rc, 0, err)
+        res = json.loads(out)
+        self.assertTrue(res["ok"])
+
+        after = self._settings()
+        self.assertNotIn("PreToolUse", after.get("hooks", {}))
+        # global-lint-tool 엔트리(root 미참조)가 실제로 사라졌는지 - fix round 1 의 핵심 검증.
+        stop_cmds = [h["hooks"][0]["command"] for h in after.get("hooks", {}).get("Stop", [])]
+        self.assertNotIn("global-lint-tool --check", stop_cmds)
+        # PreToolUse 가 빈 배열로 낙오되지 않았는지(hooks_remove 가 지우고, 그 뒤 identity
+        # 제거 루프가 다른 이벤트를 건드리다 빈 형제 키를 남기면 이 assert 가 잡는다).
+        self.assertEqual(sorted(after["hooks"]), ["Stop"])
+
+    def test_uninstall_leaves_users_own_hook_in_same_event(self):
+        self.libcmd("hooks-install", "--origin", "market:mk/sg", "--settings", self.settings)
+        self.libcmd("hooks-uninstall", "--origin", "market:mk/sg", "--settings", self.settings)
+        after = self._settings()
+        stop_cmds = [h["hooks"][0]["command"] for h in after["hooks"]["Stop"]]
+        self.assertEqual(stop_cmds, ["echo user-own"])
+
+    def test_uninstall_degrades_gracefully_when_cache_gone(self):
+        self.libcmd("hooks-install", "--origin", "market:mk/sg", "--settings", self.settings)
+        shutil.rmtree(self.root)   # 사용자가 도구 밖에서 캐시를 직접 지운 상황을 재현.
+
+        rc, out, err = self.libcmd("hooks-uninstall", "--origin", "market:mk/sg",
+                                   "--settings", self.settings)
+        self.assertEqual(rc, 0, err)
+        res = json.loads(out)
+        self.assertTrue(res["ok"])
+        self.assertTrue(res.get("degraded"), "캐시가 없으면 축소된 결과임을 명시해야 한다")
+        self.assertTrue(res.get("warning"))
+
+        after = self._settings()
+        # root 매칭 엔트리는 캐시가 없어도 여전히 제거된다(hooks_remove 는 command 문자열만 본다).
+        self.assertNotIn("PreToolUse", after.get("hooks", {}))
+        # 구조적 동일성은 hooks.json 을 다시 읽어야 하는데 캐시가 없어 읽을 수 없다 -
+        # root 미참조 엔트리는 "할 수 있는 만큼만" 원칙에 따라 남는다(조용히 사라지면 안 됨).
+        stop_cmds = [h["hooks"][0]["command"] for h in after.get("hooks", {}).get("Stop", [])]
+        self.assertIn("global-lint-tool --check", stop_cmds)
+        self.assertIn("echo user-own", stop_cmds)   # 사용자 hook 은 이 경로에서도 안 건드림
+
+
+class ScanHooksMcpFlags(unittest.TestCase):
+    """scan 이 has_hooks/has_mcp 를 방출해야 대시보드의 hooks/mcp 설치 버튼이 뜬다(fix round 1
+    Finding 2 - 이전에는 cmd_plugin_fetch 응답에만 있어 scan 행에는 없었다)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="scanflags_test_")
+        self.store = os.path.join(self.tmp, "store")
+        self.target = os.path.join(self.tmp, "live")
+        run(CAS, "--store", self.store, "init")
+
+        self.lib_both = os.path.join(self.tmp, "plugin-both")
+        os.makedirs(os.path.join(self.lib_both, "hooks"))
+        with open(os.path.join(self.lib_both, "hooks", "hooks.json"), "w", encoding="utf-8") as f:
+            json.dump({"hooks": {}}, f)
+        with open(os.path.join(self.lib_both, ".mcp.json"), "w", encoding="utf-8") as f:
+            json.dump({"mcpServers": {}}, f)
+
+        self.lib_neither = os.path.join(self.tmp, "plugin-neither")
+        os.makedirs(self.lib_neither)
+
+        self.lib_missing = os.path.join(self.tmp, "plugin-missing")   # 등록만 하고 실제로는 안 만든다
+
+        import lib_store
+        cfg = lib_store.load_cfg(self.store)
+        cfg["libraries"] = [self.lib_both, self.lib_neither]
+        cfg.setdefault("remotes", []).append({"id": "gone", "url": "u", "cache": self.lib_missing})
+        lib_store.save_cfg(self.store, cfg)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def libcmd(self, *args):
+        return run(LIB, "--store", self.store, "--target", self.target, "--no-snapshot", *args)
+
+    def _rows(self):
+        rc, out, err = self.libcmd("scan")
+        self.assertEqual(rc, 0, err)
+        return {r["lib"]: r for r in json.loads(out)["libraries"]}
+
+    def test_plugin_with_both_reports_true(self):
+        row = self._rows()[self.lib_both]
+        self.assertTrue(row["has_hooks"])
+        self.assertTrue(row["has_mcp"])
+
+    def test_plugin_with_neither_reports_false(self):
+        row = self._rows()[self.lib_neither]
+        self.assertFalse(row["has_hooks"])
+        self.assertFalse(row["has_mcp"])
+
+    def test_missing_cache_row_reports_false_without_raising(self):
+        row = self._rows()[self.lib_missing]
+        self.assertEqual(row.get("error"), "경로 없음")
+        self.assertFalse(row["has_hooks"])
+        self.assertFalse(row["has_mcp"])

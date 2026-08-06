@@ -28,16 +28,21 @@ for _s in (sys.stdout, sys.stderr):
     except (AttributeError, ValueError):
         pass
 
-from config_edit import backup, snapshot_before, trash, out  # 동일 안전 규율 재사용
+from config_edit import (backup, snapshot_before, trash, out, load, save_atomic,
+                         op_mcp_add, op_mcp_remove)  # 동일 안전 규율 재사용
 import lib_store
 import marketplace
 import remote_fetch
+import plugin_units
+import paths
 from lib_store import norm as _norm   # 정규화 규칙을 한 곳에서만 정의
 
 HOME = os.path.expanduser("~")
 DEFAULT_TARGET = os.path.join(HOME, ".claude")
 DEFAULT_STORE = os.environ.get("CLAUDE_SNAPSHOT_STORE") or (
     "D:\\.claude-snapshot" if os.name == "nt" else os.path.join(HOME, ".claude-snapshot"))
+DEFAULT_CLAUDE_JSON = os.path.join(HOME, ".claude.json")
+DEFAULT_DESKTOP_CONFIG = paths.desktop_config_path()
 
 # 카테고리 -> (라이브러리 하위경로, 항목 종류)
 CATEGORIES = {
@@ -272,7 +277,14 @@ def cmd_scan(a):
     result = []
     for rec in recs:
         lib, src, origin, cmap = rec["lib"], rec["source"], rec["origin"], rec["map"]
-        row = {"lib": lib, "source": src, "origin": origin, **meta.get(origin, {})}
+        # hooks/mcp 설치 버튼이 이 행에 매달린다(cmd_plugin_fetch 응답에만 있었다 - Task 22
+        # UI 는 scan 행을 쓰므로 여기 없으면 버튼이 안 뜬다). lib 가 없어도(경로 없음 분기로
+        # 빠지기 전) os.path.exists 는 예외 없이 False 를 준다 - os.walk 가 아니라 exists 2회뿐이라
+        # 카테고리 나열과 달리 실패할 여지도, 느려질 여지도 없다.
+        has_hooks = os.path.exists(os.path.join(lib, plugin_units.HOOKS_REL))
+        has_mcp = os.path.exists(os.path.join(lib, plugin_units.MCP_REL))
+        row = {"lib": lib, "source": src, "origin": origin, "has_hooks": has_hooks, "has_mcp": has_mcp,
+               **meta.get(origin, {})}
         if not os.path.isdir(lib):
             result.append({**row, "error": "경로 없음", "categories": {}})
             continue
@@ -840,11 +852,252 @@ def cmd_fetch(a):
                      ensure_ascii=False))
 
 
+def _resolve_origin_root(store, origin):
+    """origin -> (플러그인 루트 경로, 표시 이름). 미물질화면 (None, name)."""
+    if origin.startswith("remote:"):
+        rid = origin[len("remote:"):]
+        cfg = lib_store.load_cfg(store)
+        r = next((x for x in cfg.get("remotes", []) if x.get("id") == rid), None)
+        return ((r or {}).get("cache"), rid)
+    if origin.startswith("market:"):
+        rest = origin[len("market:"):]
+        mid, _, pname = rest.partition("/")
+        cfg = lib_store.load_cfg(store)
+        m = next((x for x in cfg.get("marketplaces", []) if x.get("id") == mid), None)
+        if not m:
+            return (None, pname or mid)
+        p = next((x for x in m.get("plugins", []) if x.get("name") == pname), None)
+        return ((p or {}).get("cache"), pname)
+    return (None, origin)
+
+
+def _settings_path(a):
+    return a.settings or os.path.join(a.target, "settings.json")
+
+
+def cmd_hooks_install(a):
+    """플러그인의 hooks 를 settings.json 에 병합한다. **네트워크를 타지 않는다.**
+
+    미물질화 플러그인이면 암묵적으로 받아오지 않고 거부한다 -
+    fetch 는 항상 사용자가 명시적으로 누른 결과여야 한다."""
+    root, name = _resolve_origin_root(a.store, a.origin)
+    if not root or not os.path.isdir(root):
+        print(json.dumps({"ok": False, "message": f"아직 가져오지 않은 항목입니다 - fetch 먼저 실행하세요: {a.origin}"},
+                         ensure_ascii=False)); return
+    hooks_cfg = plugin_units.load_hooks_json(root)
+    if not hooks_cfg:
+        print(json.dumps({"ok": False, "message": f"hooks/hooks.json 이 없습니다: {a.origin}"},
+                         ensure_ascii=False)); return
+
+    warns = plugin_units.interpreter_warnings(hooks_cfg)
+    commands = plugin_units.hook_commands(plugin_units.substitute(hooks_cfg, root))
+    if a.dry_run:
+        # 치환된 명령 원문을 그대로 보여준다. 설치 = 매 세션 임의 코드 실행이므로 별도 확인 단계다.
+        print(json.dumps({"ok": True, "dry_run": True, "origin": a.origin, "root": root,
+                          "commands": commands, "warnings": warns,
+                          "events": sorted((hooks_cfg.get("hooks") or {}).keys())},
+                         ensure_ascii=False)); return
+
+    sp = _settings_path(a)
+    cfg = lib_store.load_cfg(a.store)
+    prev = lib_store.ledger_get(cfg, a.target, "hooks", name) or {}
+    old_root = prev.get("root")          # needle 은 원장의 root 이지 현재 캐시 경로가 아니다
+
+    s = load(sp)
+    s, removed, added = plugin_units.hooks_merge(s, hooks_cfg, root, old_root)
+    if not a.no_snapshot:
+        snapshot_before(a.store)
+    bak = backup(sp)
+    save_atomic(sp, s)
+
+    warn = None
+    try:
+        cfg = lib_store.load_cfg(a.store)
+        lib_store.ledger_put(cfg, a.target, "hooks", name, {
+            "kind": "hooks", "origin": a.origin, "root": root,
+            "events": sorted((hooks_cfg.get("hooks") or {}).keys()),
+            "src_hash": _hash_file(os.path.join(root, plugin_units.HOOKS_REL)), "at": _now(),
+        })
+        lib_store.save_cfg(a.store, cfg)
+    except lib_store.StoreNotInitialized:
+        warn = "스토어 미초기화로 출처를 기록하지 못했습니다 - 제거 시 --root 로 경로를 직접 지정해야 합니다"
+
+    print(json.dumps({"ok": True, "origin": a.origin, "root": root, "settings": sp,
+                      "removed": removed, "added": added, "backup": bak,
+                      "warnings": warns, "warning": warn,
+                      "message": f"hooks 설치됨: {name} ({added}건)"}, ensure_ascii=False))
+
+
+def _hooks_remove_all(settings, root, hooks_cfg):
+    """settings 에서 이 플러그인의 hook 엔트리를 제거한다 - root 매칭 + (있으면) 구조적 동일성,
+    hooks_merge 가 삽입 중복을 막는 두 메커니즘을 그대로 대칭 적용한다.
+
+    root 매칭만으로는 ${CLAUDE_PLUGIN_ROOT} 를 전혀 안 쓰는 hook(전역 도구를 직접 부르는
+    유효한 hooks.json)을 못 찾는다 - 그런 엔트리는 설치 때 identity 매칭으로 들어갔으므로
+    제거도 identity 매칭이어야 대칭이다. hooks_cfg 가 None 이면(캐시가 이미 사라졌거나
+    hooks.json 을 못 읽음) root 매칭만 수행한다 - 호출부가 이 축소된 결과를 degraded 로 알린다.
+    (settings, 제거수) 반환."""
+    settings, removed = plugin_units.hooks_remove(settings, root)
+    if not hooks_cfg:
+        return settings, removed
+    subbed = plugin_units.substitute(hooks_cfg, root)
+    hooks = settings.get("hooks") or {}
+    for event, entries in (subbed.get("hooks") or {}).items():
+        entries = entries or []
+        if not entries or event not in hooks:
+            continue
+        existing = hooks[event]
+        keep = [e for e in existing if e not in entries]   # 사용자 hook 은 이 필터에 안 걸린다
+        removed += len(existing) - len(keep)
+        if keep:
+            hooks[event] = keep
+        else:
+            del hooks[event]                                 # 빈 배열을 남기지 않는다
+    if hooks:
+        settings["hooks"] = hooks
+    else:
+        settings.pop("hooks", None)
+    return settings, removed
+
+
+def cmd_hooks_uninstall(a):
+    """settings.json 에서 이 플러그인의 hook 엔트리를 걷어낸다. 캐시는 지우지 않는다.
+
+    구조적 동일성 판정에는 그 플러그인의 hooks.json 이 다시 필요하다 - 원장의 root 는
+    캐시가 아직 살아있다는 보장이다(unregister 가 원장이 참조하는 캐시를 지우지 못하게 막는다).
+    사용자가 도구 밖에서 캐시를 직접 지웠다면 그 보장이 깨지므로 root 매칭만으로 폴백하고,
+    무엇을 못 했는지 결과에 명시한다(조용히 덜 하지 않는다)."""
+    cfg = lib_store.load_cfg(a.store)
+    _, name = _resolve_origin_root(a.store, a.origin)
+    rec = lib_store.ledger_get(cfg, a.target, "hooks", name) or {}
+    root = rec.get("root") or _resolve_origin_root(a.store, a.origin)[0]
+    if not root:
+        print(json.dumps({"ok": True, "message": "설치 기록이 없습니다 (no-op)", "changed": False},
+                         ensure_ascii=False)); return
+    cache_present = os.path.isdir(root)
+    hooks_cfg = plugin_units.load_hooks_json(root) if cache_present else None
+    sp = _settings_path(a)
+    s = load(sp)
+    s, removed = _hooks_remove_all(s, root, hooks_cfg)
+    if removed:
+        if not a.no_snapshot:
+            snapshot_before(a.store)
+        backup(sp)
+        save_atomic(sp, s)
+    try:
+        lib_store.ledger_del(cfg, a.target, "hooks", name)
+        lib_store.save_cfg(a.store, cfg)
+    except lib_store.StoreNotInitialized:
+        pass
+    degraded = not cache_present
+    warn = ("플러그인 캐시가 이미 사라져 경로 매칭 hook만 제거했습니다 - 플러그인 루트를 "
+            "참조하지 않는(전역 도구를 직접 호출하는) hook 이 남아 있을 수 있습니다") if degraded else None
+    print(json.dumps({"ok": True, "origin": a.origin, "removed": removed, "changed": bool(removed),
+                      "degraded": degraded, "warning": warn,
+                      "message": f"hooks 제거됨: {name} ({removed}건)"}, ensure_ascii=False))
+
+
+def _mcp_target(a):
+    """scope -> 대상 파일. config_edit.main() 의 선택 로직과 같은 기준.
+    desktop 이 실질 가치다 - Claude Desktop 에는 /plugin 마켓플레이스가 없다."""
+    return a.desktop_config if a.scope == "desktop" else a.claude_json
+
+
+def cmd_mcp_install(a):
+    """플러그인의 .mcp.json 서버를 ~/.claude.json 또는 Desktop config 에 넣는다.
+    **네트워크를 타지 않는다.** 미물질화면 거부한다."""
+    root, name = _resolve_origin_root(a.store, a.origin)
+    if not root or not os.path.isdir(root):
+        print(json.dumps({"ok": False, "message": f"아직 가져오지 않은 항목입니다 - fetch 먼저 실행하세요: {a.origin}"},
+                         ensure_ascii=False)); return
+    mcp = plugin_units.load_mcp_json(root)
+    servers = (mcp or {}).get("mcpServers") or {}
+    if a.server:
+        if a.server not in servers:
+            print(json.dumps({"ok": False, "message": f"해당 서버가 없습니다: {a.server}",
+                              "available": sorted(servers)}, ensure_ascii=False)); return
+        servers = {a.server: servers[a.server]}
+    if not servers:
+        print(json.dumps({"ok": False, "message": f".mcp.json 서버가 없습니다: {a.origin}"},
+                         ensure_ascii=False)); return
+    servers = plugin_units.substitute(servers, root)
+
+    tgt = _mcp_target(a)
+    if a.dry_run:
+        print(json.dumps({"ok": True, "dry_run": True, "origin": a.origin, "root": root,
+                          "target": tgt, "servers": sorted(servers),
+                          "detail": servers}, ensure_ascii=False)); return
+
+    d = load(tgt)
+    for sname, sconf in servers.items():
+        d, _msg, _ch = op_mcp_add(d, sname, sconf)
+    if not a.no_snapshot:
+        snapshot_before(a.store)
+    bak = backup(tgt)
+    save_atomic(tgt, d)
+
+    warn = None
+    try:
+        cfg = lib_store.load_cfg(a.store)
+        prev = lib_store.ledger_get(cfg, a.target, "mcp", name) or {}
+        merged = sorted(set(prev.get("servers", [])) | set(servers))
+        lib_store.ledger_put(cfg, a.target, "mcp", name, {
+            "kind": "mcp", "origin": a.origin, "root": root, "scope": a.scope,
+            "target": tgt, "servers": merged, "at": _now(),
+        })
+        lib_store.save_cfg(a.store, cfg)
+    except lib_store.StoreNotInitialized:
+        warn = "스토어 미초기화로 출처를 기록하지 못했습니다(설치 자체는 완료)"
+    print(json.dumps({"ok": True, "origin": a.origin, "target": tgt, "backup": bak,
+                      "servers": sorted(servers), "warning": warn,
+                      "message": f"MCP 서버 설치됨: {name} ({len(servers)}개, scope={a.scope})"},
+                     ensure_ascii=False))
+
+
+def cmd_mcp_uninstall(a):
+    """원장에 기록된 서버 이름만 지운다. 사용자가 직접 넣은 서버는 건드리지 않는다."""
+    cfg = lib_store.load_cfg(a.store)
+    _, name = _resolve_origin_root(a.store, a.origin)
+    rec = lib_store.ledger_get(cfg, a.target, "mcp", name) or {}
+    names = [a.server] if a.server else rec.get("servers", [])
+    tgt = rec.get("target") or _mcp_target(a)
+    if not names:
+        print(json.dumps({"ok": True, "message": "설치 기록이 없습니다 (no-op)", "changed": False},
+                         ensure_ascii=False)); return
+    d = load(tgt)
+    removed = 0
+    for sname in names:
+        d, _msg, ch = op_mcp_remove(d, sname)
+        removed += 1 if ch else 0
+    if removed:
+        if not a.no_snapshot:
+            snapshot_before(a.store)
+        backup(tgt)
+        save_atomic(tgt, d)
+    try:
+        if a.server and rec.get("servers"):
+            rec["servers"] = [s for s in rec["servers"] if s != a.server]
+            if rec["servers"]:
+                lib_store.ledger_put(cfg, a.target, "mcp", name, rec)
+            else:
+                lib_store.ledger_del(cfg, a.target, "mcp", name)
+        else:
+            lib_store.ledger_del(cfg, a.target, "mcp", name)
+        lib_store.save_cfg(a.store, cfg)
+    except lib_store.StoreNotInitialized:
+        pass
+    print(json.dumps({"ok": True, "origin": a.origin, "target": tgt, "removed": removed,
+                      "changed": bool(removed),
+                      "message": f"MCP 서버 제거됨: {name} ({removed}개)"}, ensure_ascii=False))
+
+
 def main():
     ap = argparse.ArgumentParser(prog="library")
     ap.add_argument("--store", default=DEFAULT_STORE)
     ap.add_argument("--target", default=DEFAULT_TARGET, help="설치 대상 루트(기본 ~/.claude)")
     ap.add_argument("--no-snapshot", action="store_true")
+    ap.add_argument("--claude-json", default=DEFAULT_CLAUDE_JSON)
+    ap.add_argument("--desktop-config", default=DEFAULT_DESKTOP_CONFIG)
     sub = ap.add_subparsers(dest="op", required=True)
 
     p = sub.add_parser("scan"); p.add_argument("--lib", default=None)
@@ -880,6 +1133,21 @@ def main():
     p.set_defaults(func=cmd_plugin_fetch)
     p = sub.add_parser("fetch"); p.add_argument("--origin", required=True)
     p.set_defaults(func=cmd_fetch)
+    p = sub.add_parser("hooks-install"); p.add_argument("--origin", required=True)
+    p.add_argument("--settings", default=None, help="대상 settings.json(기본 <target>/settings.json)")
+    p.add_argument("--dry-run", action="store_true", help="쓰지 않고 치환된 명령·경고만 반환")
+    p.set_defaults(func=cmd_hooks_install)
+    p = sub.add_parser("hooks-uninstall"); p.add_argument("--origin", required=True)
+    p.add_argument("--settings", default=None)
+    p.set_defaults(func=cmd_hooks_uninstall)
+    p = sub.add_parser("mcp-install"); p.add_argument("--origin", required=True)
+    p.add_argument("--server", default=None); p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--scope", choices=["user", "desktop"], default="user")
+    p.set_defaults(func=cmd_mcp_install)
+    p = sub.add_parser("mcp-uninstall"); p.add_argument("--origin", required=True)
+    p.add_argument("--server", default=None)
+    p.add_argument("--scope", choices=["user", "desktop"], default="user")
+    p.set_defaults(func=cmd_mcp_uninstall)
 
     a = ap.parse_args()
     a.func(a)
