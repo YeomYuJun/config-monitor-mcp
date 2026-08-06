@@ -76,6 +76,10 @@ const I18N: Record<string, Record<string, string>> = {
     libInstallGroupHint: "이 그룹의 미설치 스킬 전체 설치", libAllInstalled: "이미 전부 설치됨",
     installTarget: "설치 대상", targetGlobal: "전역 (~/.claude)", rootItems: "루트 항목 · 폴더 없음",
     toastGroup: "그룹 설치 완료", toastSel: "선택 설치 완료", cntUnit: "개",
+    catTitle: "마켓플레이스 카탈로그", catSearch: "검색…", catAll: "전체", catFetch: "가져오기",
+    catFetched: "가져옴", catEmpty: "등록된 마켓플레이스 없음", catMore: "더 보기",
+    catMarketAdd: "마켓 등록", catMarketUrlPlaceholder: "마켓 레포 URL (marketplace.json 보유)",
+    catCount: "개",
   },
   en: {
     newFile: "New", modified: "Modified", deleted: "Deleted", unchanged: "Same",
@@ -131,6 +135,10 @@ const I18N: Record<string, Record<string, string>> = {
     libInstallGroupHint: "Install all not-installed skills in this group", libAllInstalled: "All already installed",
     installTarget: "Install to", targetGlobal: "Global (~/.claude)", rootItems: "root items · no folder",
     toastGroup: "Group install done", toastSel: "Selected install done", cntUnit: "",
+    catTitle: "Marketplace catalog", catSearch: "Search…", catAll: "All", catFetch: "Fetch",
+    catFetched: "Fetched", catEmpty: "No marketplace registered", catMore: "Load more",
+    catMarketAdd: "Add marketplace", catMarketUrlPlaceholder: "Marketplace repo URL (has marketplace.json)",
+    catCount: "",
   },
 };
 
@@ -149,6 +157,19 @@ if (!lang) {
 if (!lang) lang = "ko";
 const t = (k: string): string => (I18N[lang] || I18N.ko)[k] ?? k;
 
+// 도구 실패를 항상 jparse().ok===false 로 잡히는 문자열로 정규화한다(성공 텍스트는 그대로 통과).
+// 두 전송(MCP isError / REST !res.ok) 모두 여기로 모아 기존 ~40개 호출부의 가드를 그대로 재사용한다.
+function normalizeToolError(txt: string, fallback: string): string {
+  try {
+    const p = JSON.parse(txt);
+    // ok:false 를 실제로 담은 페이로드만 그대로 통과시킨다(예: runPy 가 건져올린 out(False,...)).
+    // 임의의 JSON 객체(예: {code,message} 형태의 프로토콜 에러)를 통과시키면 r.ok 가 undefined 가 되어
+    // 가드를 그냥 지나쳐 다시 "성공" 취급될 수 있다 - 이번 라운드가 고치려는 결함과 같은 모양이 된다.
+    if (p && typeof p === "object" && p.ok === false) return txt;
+  } catch { /* 순수 에러 메시지 문자열 - 아래에서 감싼다 */ }
+  return JSON.stringify({ ok: false, message: txt || fallback });
+}
+
 async function callTool(name: string, args: Record<string, unknown> = {}): Promise<string> {
   if (STANDALONE) {
     const res = await fetch(`/api/tool/${name}`, {
@@ -156,11 +177,18 @@ async function callTool(name: string, args: Record<string, unknown> = {}): Promi
       headers: { "content-type": "application/json" },
       body: JSON.stringify(args),
     });
-    if (!res.ok) throw new Error(`REST ${name}: ${res.status}`);
-    return (await res.json()).text ?? "";
+    let body: any = null;
+    try { body = await res.json(); } catch { /* 응답 본문이 JSON 아님(프록시/네트워크 오류 등) */ }
+    if (!res.ok) {
+      // /api/tool/:name 은 핸들러가 실제로 throw 했을 때만 비2xx({error})를 준다 - MCP 의 isError 와 동급.
+      return normalizeToolError((body && body.error) || "", `REST ${name}: ${res.status}`);
+    }
+    return body?.text ?? "";
   }
   const r = await app.callServerTool({ name, arguments: args });
-  return (r.content?.find((c: any) => c.type === "text") as any)?.text ?? "";
+  const txt = (r.content?.find((c: any) => c.type === "text") as any)?.text ?? "";
+  if (r.isError) return normalizeToolError(txt, t("failed"));
+  return txt;
 }
 
 // MCP 브리지 전용 기능들은 standalone 에서 no-op.
@@ -1075,10 +1103,10 @@ function renderLibrary(host: HTMLElement, res: any): void {
         age.textContent = days === null || Number.isNaN(days) ? t("libNeverFetched") : `${days}${t("libStale")}`;
         chip.appendChild(age);
       }
-      // env/remote/market 은 아직 제거 불가: library_unregister 는 cfg["libraries"](등록 경로)만 다루므로
-      // remote/market(캐시 경로) 에 쓰면 ok:true, removed:false 로 조용히 no-op(거짓 성공 토스트).
-      // library_unregister --origin(실제 remote/market 해제 + 캐시 정리 + 원장 가드)이 오기 전까진 ✕ 를 그리지 않는다 - Task 15.
-      return chip;
+      // env(CLAUDE_CONFIG_LIBRARIES) 지정 경로만 대시보드에서 제거 불가 -> ✕ 미표시.
+      // remote/market 은 library_unregister --origin(Task 15) 이 캐시까지 정리하고, 원장이 그 캐시를
+      // 참조 중이면 거부(held_by) 하므로 ✕ 를 그려도 안전하다 - 아래 공용 ✕ 로 흘려보낸다.
+      if (l.source === "env") return chip;
     }
     const x = document.createElement("button");
     x.className = "cx";
@@ -1096,9 +1124,16 @@ function renderLibrary(host: HTMLElement, res: any): void {
       ok.addEventListener("click", async () => {
         ok.textContent = "…";
         try {
-          const r = jparse(await callTool("library_unregister", { lib: l.lib }));
-          if (r && r.ok === false) { flashToast(r.message || t("failed")); chip.replaceWith(mkPathChip(l)); return; }
-          flashToast(t("libPathRemoved") + " · " + basename(l.lib));
+          const args = l.source === "registered" ? { lib: l.lib } : { origin: l.origin };
+          const r = jparse(await callTool("library_unregister", args));
+          if (r && r.ok === false) {
+            // 원장 가드 거부: 무엇이 캐시를 붙들고 있는지 보여준다(강제 옵션은 두지 않는다).
+            const msg = r.held_by && r.held_by.length ? `${r.message || t("failed")} (${r.held_by.join(", ")})` : (r.message || t("failed"));
+            flashToast(msg);
+            chip.replaceWith(mkPathChip(l));
+            return;
+          }
+          flashToast(r?.message || (t("libPathRemoved") + " · " + basename(l.lib)));
           await refresh();
         } catch (e) { flashToast(t("failed")); console.error("[config-monitor] lib unregister", e); chip.replaceWith(mkPathChip(l)); }
       });
@@ -1131,6 +1166,132 @@ async function refreshLibrary(): Promise<void> {
     if (parsed && parsed.ok !== false) res = parsed;
   } catch { /* 스캔 오류 -> 빈 목록(미등록)으로 진행 */ }
   renderLibrary(host, res);
+}
+
+// ----- 마켓플레이스 카탈로그 (Library 칸과 다른 뷰) -----
+// Library 칸 = 가져온 것. 카탈로그 = 가져올 수 있는 것.
+// renderLibrary 로 그리지 않는다 - 매 새로고침마다 전 항목을 eager 렌더하므로 278행이 들어오면 못 쓴다.
+let catQuery = "", catCategory = "", catOffset = 0;
+const CAT_PAGE = 40;
+
+async function renderCatalog(host: HTMLElement): Promise<void> {
+  let res: any = { ok: true, total: 0, rows: [], categories: {} };
+  try {
+    const parsed = jparse(await callTool("library_catalog", {
+      query: catQuery || undefined, category: catCategory || undefined,
+      limit: CAT_PAGE, offset: catOffset,
+    }));
+    if (parsed && parsed.ok !== false) res = parsed;
+  } catch (e) { console.error("[config-monitor] catalog", e); }
+
+  const sec = document.createElement("section");
+  sec.className = "sec";
+  const head = document.createElement("div");
+  head.className = "sechead";
+  head.innerHTML = `<span class="sectitle">${esc(t("catTitle"))}</span>` +
+    `<span class="seccount">${res.total}${esc(t("catCount"))}</span>`;
+  sec.appendChild(head);
+
+  const body = document.createElement("div");
+  body.className = "secbody";
+
+  const bar = document.createElement("div");
+  bar.className = "adder";
+  const q = document.createElement("input");
+  q.placeholder = t("catSearch");
+  q.value = catQuery;
+  q.addEventListener("keydown", (e) => {
+    if ((e as KeyboardEvent).key === "Enter") { catQuery = q.value.trim(); catOffset = 0; refresh(); }
+  });
+  const sel = document.createElement("select");
+  const cats = ["", ...Object.keys(res.categories || {}).filter(Boolean).sort()];
+  for (const c of cats) {
+    const o = document.createElement("option");
+    o.value = c;
+    o.textContent = c || t("catAll");
+    if (c === catCategory) o.selected = true;
+    sel.appendChild(o);
+  }
+  sel.addEventListener("change", () => { catCategory = sel.value; catOffset = 0; refresh(); });
+  bar.append(q, sel);
+  body.appendChild(bar);
+
+  if (!res.rows.length) {
+    const empty = document.createElement("div");
+    empty.className = "dlabel";
+    empty.textContent = t("catEmpty");
+    body.appendChild(empty);
+  }
+  for (const row of res.rows) {
+    const r = document.createElement("div");
+    r.className = "libskill";
+    const nm = document.createElement("span");
+    nm.className = "sknm";
+    nm.textContent = row.display || row.name;
+    nm.title = row.description || "";
+    const bd = document.createElement("span");
+    bd.className = "badge" + (row.fetched ? " ok" : "");
+    bd.textContent = row.fetched ? t("catFetched") : (row.category || row.kind);
+    const act = document.createElement("div");
+    act.className = "edit";
+    if (!row.fetched) {
+      const b = document.createElement("button");
+      b.className = "addbtn";
+      b.textContent = t("catFetch");
+      b.addEventListener("click", async () => {
+        b.textContent = "…";
+        try {
+          const rr = jparse(await callTool("library_plugin_fetch",
+            { marketplace: row.marketplace, plugin: row.name }));
+          if (rr && rr.ok === false) { flashToast(rr.message || t("failed")); b.textContent = t("catFetch"); return; }
+          flashToast(`${rr?.message || t("done")} · ${row.name}`);
+          await refresh();
+        } catch (e) { flashToast(t("failed")); b.textContent = t("failed"); console.error("[config-monitor] plugin fetch", e); }
+      });
+      act.appendChild(b);
+    }
+    r.append(nm, bd, act);
+    body.appendChild(r);
+  }
+  if (res.total > catOffset + res.rows.length) {
+    const more = document.createElement("button");
+    more.className = "addbtn";
+    more.textContent = t("catMore");
+    more.addEventListener("click", () => { catOffset += CAT_PAGE; refresh(); });
+    body.appendChild(more);
+  }
+
+  // 마켓 등록 입력행(원격 등록과 같은 경고 규율)
+  const mAdder = document.createElement("div");
+  mAdder.className = "adder";
+  const mIn = document.createElement("input");
+  mIn.placeholder = t("catMarketUrlPlaceholder");
+  const mBtn = document.createElement("button");
+  mBtn.className = "addbtn";
+  mBtn.textContent = t("catMarketAdd");
+  const mWarn = document.createElement("div");
+  mWarn.className = "dlabel";
+  mWarn.style.display = "none";
+  mBtn.addEventListener("click", async () => {
+    const url = mIn.value.trim();
+    if (!url) return;
+    if (mWarn.style.display === "none") {
+      mWarn.textContent = t("libRemoteWarn"); mWarn.style.display = "";
+      mBtn.textContent = t("libRemoteWarnOk"); return;
+    }
+    mBtn.textContent = "…";
+    try {
+      const rr = jparse(await callTool("library_marketplace_add", { url }));
+      if (rr && rr.ok === false) { flashToast(rr.message || t("failed")); mBtn.textContent = t("catMarketAdd"); return; }
+      flashToast(rr?.message || t("done"));
+      await refresh();
+    } catch (e) { flashToast(t("failed")); mBtn.textContent = t("failed"); console.error("[config-monitor] market add", e); }
+  });
+  mAdder.append(mIn, mBtn);
+  body.append(mWarn, mAdder);
+
+  sec.appendChild(body);
+  host.appendChild(sec);
 }
 
 // ----- detail panel: history + diff -----
@@ -1330,23 +1491,24 @@ async function refresh(): Promise<void> {
   let trackedCount = 0;
   try {
     const trk = jparseLast(await callTool("get_tracked"));
-    if (trk) trackedCount = renderTracked(trk);
-    else $("tracked").innerHTML = `<div class="empty">${esc(t("emptyTrackedResp"))}</div>`;
+    if (trk && trk.ok !== false) trackedCount = renderTracked(trk);
+    else $("tracked").innerHTML = `<div class="empty">${esc(trk?.message || t("emptyTrackedResp"))}</div>`;
   } catch (e) {
     showErr("tracked", t("trackedStatus"), e);
   }
   try {
     // libProjectTargets(추적 프로젝트 .claude 경로들)는 앞선 renderTracked 에서 채워짐 -> 프로젝트 스코프 설정 포함.
     const cfg = jparse(await callTool("get_config", { projects: libProjectTargets }));
-    if (cfg) {
+    if (cfg && cfg.ok !== false) {
       renderConfig(cfg.sections || []);
       // settingsHint 앞자리 숫자만 실제 카테고리 수로 치환해 라이브 카운트 유지.
       $("config-hint").textContent = t("settingsHint").replace(/^\d+/, String((cfg.sections || []).length));
-    } else $("config").innerHTML = `<div class="empty">${esc(t("emptyConfigResp"))}</div>`;
+    } else $("config").innerHTML = `<div class="empty">${esc(cfg?.message || t("emptyConfigResp"))}</div>`;
   } catch (e) {
     showErr("config", t("settings"), e);
   }
   try { await refreshLibrary(); } catch (e) { console.error("[config-monitor] library", e); }
+  try { await renderCatalog($("config")); } catch (e) { console.error("[config-monitor] catalog", e); }
   const now = new Date().toTimeString().slice(0, 8);
   $("subtitle").textContent = `${t("generatedPrefix")}${trackedCount}${t("generatedMid")}${now}`;
   refreshWatcher();

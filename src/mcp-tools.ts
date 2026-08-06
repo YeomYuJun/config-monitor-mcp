@@ -64,11 +64,28 @@ export function buildTools(scriptDir: string): ToolDef[] {
   const STORE = process.env.CLAUDE_SNAPSHOT_STORE ||
     (process.platform === "win32" ? "D:\\.claude-snapshot" : path.join(process.env.HOME || "", ".claude-snapshot"));
   const runPy = async (script: string, args: string[]): Promise<string> => {
-    const { stdout } = await pexec(PY, [path.join(scriptDir, script), ...args], {
-      env: PY_ENV,
-      maxBuffer: 16 * 1024 * 1024,
-    });
-    return stdout;
+    try {
+      const { stdout } = await pexec(PY, [path.join(scriptDir, script), ...args], {
+        env: PY_ENV,
+        maxBuffer: 16 * 1024 * 1024,
+      });
+      return stdout;
+    } catch (e: any) {
+      // config_edit.out(ok=False, ...) 는 exit 1 이어도 stdout 에 유효 JSON 을 이미 찍는다.
+      // execFile 은 nonzero exit 에서 무조건 reject 해 그 JSON 을 버리므로, 여기서 err.stdout 을
+      // 건져 파싱되면 정상 결과처럼 돌려준다 - 호출부의 ok===false 가드가 처리하게 둔다.
+      // stdout 이 없거나 JSON 이 아니면(=인터프리터가 진짜 죽은 경우) 예외로 전파한다(stderr 포함해 진단 가능하게).
+      const stdout: string = typeof e?.stdout === "string" ? e.stdout : "";
+      if (stdout.trim()) {
+        try {
+          JSON.parse(stdout);
+          return stdout;
+        } catch { /* JSON 아님 -> 아래에서 진짜 실패로 전파 */ }
+      }
+      const stderr: string = typeof e?.stderr === "string" ? e.stderr : "";
+      const msg = `${script} ${args.join(" ")} failed: ${e?.message || String(e)}${stderr.trim() ? `\n${stderr}` : ""}`;
+      throw new Error(msg);
+    }
   };
 
   return [
@@ -467,13 +484,20 @@ export function buildTools(scriptDir: string): ToolDef[] {
     {
       name: "library_unregister",
       meta: {
-        title: "Unregister Library Path",
-        description: "등록된 라이브러리 경로를 store/config.json 의 libraries 에서 제거(추적 해제). 설치된 항목·라이브러리 원본 디렉토리는 건드리지 않음. env(CLAUDE_CONFIG_LIBRARIES) 지정 경로는 제거 불가",
-        inputSchema: z.object({ lib: z.string().describe("등록 해제할 라이브러리 루트 경로") }),
+        title: "Unregister Library / Remote / Marketplace",
+        description: "등록을 해제한다. lib=로컬 경로(캐시 개념 없음), origin=remote:<id>|market:<id>(캐시도 함께 삭제). 원장이 그 캐시를 참조하는 hooks/MCP 가 있으면 거부하고 무엇이 걸렸는지 알린다. 설치된 항목·로컬 라이브러리 원본은 건드리지 않음. env 지정 경로는 제거 불가",
+        inputSchema: z.object({
+          lib: z.string().optional().describe("등록 해제할 로컬 라이브러리 루트 경로"),
+          origin: z.string().optional().describe("remote:<id> | market:<id>"),
+        }),
         annotations: EDIT,
       },
-      run: async (a: { lib: string }) =>
-        jsonResult(await runPy("library.py", ["unregister", "--lib", a.lib])),
+      run: async (a: { lib?: string; origin?: string }) => {
+        const args = ["unregister"];
+        if (a.lib) args.push("--lib", a.lib);
+        if (a.origin) args.push("--origin", a.origin);
+        return jsonResult(await runPy("library.py", args));
+      },
     },
     {
       name: "library_remote_add",
@@ -494,6 +518,67 @@ export function buildTools(scriptDir: string): ToolDef[] {
         if (a.map) args.push("--map", a.map);
         return jsonResult(await runPy("library.py", args));
       },
+    },
+    {
+      name: "library_marketplace_add",
+      meta: {
+        title: "Add Marketplace",
+        description: ".claude-plugin/marketplace.json 을 가진 레포를 카탈로그로 등록. 매니페스트만 sparse checkout 한다(공식 마켓 기준 401K, 전체 체크아웃은 9.7M). 플러그인은 선택 시점에 받는다. **네트워크를 탄다**. 공식/비공식 구분은 없다 — URL 이 전부다",
+        inputSchema: z.object({
+          url: z.string().describe("마켓 레포 URL. config-monitor 는 이 URL 을 심사하지 않는다"),
+          ref: z.string().optional(),
+          id: z.string().optional().describe("마켓 id. 생략 시 URL 의 레포명에서 파생"),
+        }), annotations: EDIT,
+      },
+      run: async (a: { url: string; ref?: string; id?: string }) => {
+        const args = ["market-add", "--url", a.url];
+        if (a.ref) args.push("--ref", a.ref);
+        if (a.id) args.push("--id", a.id);
+        return jsonResult(await runPy("library.py", args));
+      },
+    },
+    {
+      name: "library_catalog",
+      meta: {
+        title: "Browse Marketplace Catalog",
+        description: "등록된 마켓플레이스의 플러그인 목록(name/description/category/author). **네트워크를 타지 않는다** — 캐시된 매니페스트만 읽는다. '설치 가능 N개' 칼럼은 없다(컴포넌트 선언 엔트리가 4/278 뿐이라 fetch 전에는 알 수 없음)",
+        inputSchema: z.object({
+          marketplace: z.string().optional(), query: z.string().optional(),
+          category: z.string().optional(),
+          limit: z.number().int().optional(), offset: z.number().int().optional(),
+        }), annotations: READ,
+      },
+      run: async (a: { marketplace?: string; query?: string; category?: string; limit?: number; offset?: number }) => {
+        const args = ["catalog"];
+        if (a.marketplace) args.push("--marketplace", a.marketplace);
+        if (a.query) args.push("--query", a.query);
+        if (a.category) args.push("--category", a.category);
+        if (a.limit !== undefined) args.push("--limit", String(a.limit));
+        if (a.offset !== undefined) args.push("--offset", String(a.offset));
+        return jsonResult(await runPy("library.py", args));
+      },
+    },
+    {
+      name: "library_plugin_fetch",
+      meta: {
+        title: "Fetch Marketplace Plugin",
+        description: "카탈로그의 플러그인 1개를 물질화해 Library 에 합류시킨다. 번들이면 마켓 레포의 sparse 집합을 확장(+42K), 외부면 그 플러그인만 별도 fetch(~444K). **네트워크를 탄다**. 고정 sha 로 받으며 반환에 실제 컴포넌트 개수와 hooks/MCP 보유 여부가 담긴다",
+        inputSchema: z.object({ marketplace: z.string(), plugin: z.string() }), annotations: EDIT,
+      },
+      run: async (a: { marketplace: string; plugin: string }) =>
+        jsonResult(await runPy("library.py",
+          ["plugin-fetch", "--marketplace", a.marketplace, "--plugin", a.plugin])),
+    },
+    {
+      name: "library_fetch",
+      meta: {
+        title: "Refresh Remote/Marketplace",
+        description: "등록된 remote/market 을 명시적으로 갱신한다. 자동 pull 은 없다 — hooks 라면 매 세션 실행되는 코드가 조용히 바뀌는 것이므로 사용자가 눌러야 한다. origin 형식: remote:<id> / market:<id> / market:<id>/<plugin>",
+        inputSchema: z.object({ origin: z.string().describe("remote:<id> | market:<id> | market:<id>/<plugin>") }),
+        annotations: EDIT,
+      },
+      run: async (a: { origin: string }) =>
+        jsonResult(await runPy("library.py", ["fetch", "--origin", a.origin])),
     },
 
     // ----- 브라우저 열기 -----

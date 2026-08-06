@@ -20,7 +20,7 @@ hooks 는 settings.json 조각 + 경로 재작성이 필요한 복합 유닛이�
 출력은 항상 JSON (MCP 서버가 그대로 파싱).
 """
 from __future__ import annotations
-import argparse, datetime, hashlib, json, os, re, shutil, sys
+import argparse, datetime, hashlib, json, os, re, shutil, stat, sys
 
 for _s in (sys.stdout, sys.stderr):
     try:
@@ -30,6 +30,7 @@ for _s in (sys.stdout, sys.stderr):
 
 from config_edit import backup, snapshot_before, trash, out  # 동일 안전 규율 재사용
 import lib_store
+import marketplace
 import remote_fetch
 from lib_store import norm as _norm   # 정규화 규칙을 한 곳에서만 정의
 
@@ -58,10 +59,21 @@ def _hash_file(path):
     return h.hexdigest()
 
 
+def _walk_strict(path):
+    """os.walk 인데 나열 실패를 삼키지 않는다. 기본 onerror=None 은 OSError 를 조용히 버리고
+    빈 결과만 낸다 - Windows MAX_PATH(약 260자) 초과 등으로 못 읽은 하위경로가 '항목 없음'
+    으로 둔갑해(fix round 2 finding) 진짜 빈 디렉토리와 구분이 안 됐다. 여기서 다시 올려
+    보내면 호출부(_hash_dir/_has_kit_ref 는 기존 except OSError 로, _iter_items 는
+    cmd_scan 의 카테고리별 try/except 로)가 실패와 '진짜 없음'을 구분할 수 있다."""
+    def _raise(err):
+        raise err
+    return os.walk(path, onerror=_raise)
+
+
 def _hash_dir(path):
     """디렉토리 해시 = 정렬된 (상대경로, 파일해시) 목록의 해시. 파일 추가/삭제/수정 모두 감지."""
     rows = []
-    for root, dirs, names in os.walk(path):
+    for root, dirs, names in _walk_strict(path):
         dirs[:] = [d for d in dirs if not d.startswith(".")]
         for n in sorted(names):
             full = os.path.join(root, n)
@@ -76,7 +88,7 @@ def _has_kit_ref(path, kind):
     if kind == "file":
         files = [path]
     else:
-        for root, dirs, names in os.walk(path):
+        for root, dirs, names in _walk_strict(path):
             dirs[:] = [d for d in dirs if not d.startswith(".")]
             files += [os.path.join(root, n) for n in names if n.endswith((".md", ".js", ".ps1", ".sh", ".py"))]
     for f in files[:50]:
@@ -165,7 +177,9 @@ def _iter_items(lib, category, cmap=None):
     file 종류(agents/commands): base 직계 *.md.
     dir 종류(skills): 가변 깊이 재귀 - SKILL.md 를 가진 디렉토리를 스킬 leaf 로 간주.
       (그룹/서브그룹으로 감싸인 구조도 leaf 만 뽑음. leaf 내부 하위폴더로는 안 내려감.)
-    relpath 는 base(카테고리 루트) 기준 상대경로 - 그룹 표시·설치 지정에 사용."""
+    relpath 는 base(카테고리 루트) 기준 상대경로 - 그룹 표시·설치 지정에 사용.
+    _walk_strict 를 쓰므로 나열 도중 OSError 가 나면(예: 깊은 경로가 Windows 길이 제한을
+    넘음) 이 제너레이터가 그대로 raise 한다 - 호출부(cmd_scan)가 카테고리 단위로 잡는다."""
     sub, kind = CATEGORIES[category]
     if cmap and cmap.get(category):
         sub = cmap[category]
@@ -180,7 +194,7 @@ def _iter_items(lib, category, cmap=None):
             if name.lower().endswith(".md") and os.path.isfile(full):
                 yield name[:-3], full, kind, name[:-3]
         return
-    for root, dirs, names in os.walk(base):
+    for root, dirs, names in _walk_strict(base):
         dirs[:] = sorted(d for d in dirs if not d.startswith("."))
         if any(n.casefold() == "skill.md" for n in names):
             rel = os.path.relpath(root, base).replace("\\", "/")
@@ -263,26 +277,38 @@ def cmd_scan(a):
             result.append({**row, "error": "경로 없음", "categories": {}})
             continue
         cats = {}
+        enum_errors = []
         for category in CATEGORIES:
             items = []
-            for leaf, full, kind, rel in _iter_items(lib, category, cmap):
-                # 설치는 leaf 이름으로 평탄화(그룹 접두 제거) -> ~/.claude/<sub>/<leaf>
-                tgt = _target_path(a.target, category, leaf, kind)
-                st, owner = _status_ex(cfg, a.target, category, leaf, full, tgt, kind, origin)
-                group = os.path.dirname(rel).replace("\\", "/")  # "" = 그룹 없음(평면)
-                items.append({
-                    "name": leaf,
-                    "group": group,      # 표시용(가변 깊이 트리): "2-stack/java-spring" 등
-                    "relpath": rel,      # 설치 지정용(소스 상대경로, leaf 와 다를 수 있음)
-                    "status": st,
-                    "owner": owner,       # conflict 일 때 현재 소유자 origin
-                    "origin": origin,
-                    "kit_ref": _has_kit_ref(full, kind),
-                    "lib_path": full,
-                    "target": tgt,
-                })
+            try:
+                for leaf, full, kind, rel in _iter_items(lib, category, cmap):
+                    # 설치는 leaf 이름으로 평탄화(그룹 접두 제거) -> ~/.claude/<sub>/<leaf>
+                    tgt = _target_path(a.target, category, leaf, kind)
+                    st, owner = _status_ex(cfg, a.target, category, leaf, full, tgt, kind, origin)
+                    group = os.path.dirname(rel).replace("\\", "/")  # "" = 그룹 없음(평면)
+                    items.append({
+                        "name": leaf,
+                        "group": group,      # 표시용(가변 깊이 트리): "2-stack/java-spring" 등
+                        "relpath": rel,      # 설치 지정용(소스 상대경로, leaf 와 다를 수 있음)
+                        "status": st,
+                        "owner": owner,       # conflict 일 때 현재 소유자 origin
+                        "origin": origin,
+                        "kit_ref": _has_kit_ref(full, kind),
+                        "lib_path": full,
+                        "target": tgt,
+                    })
+            except OSError as e:
+                # 나열이 도중에 죽었다(예: 깊은 하위경로가 Windows MAX_PATH 를 넘음).
+                # _walk_strict 가 이제 이걸 삼키지 않고 올려 보낸다(fix round 2 finding) -
+                # 이 카테고리만 비우고 계속하되(한 라이브러리의 사고가 scan 전체를 막지 않음),
+                # row 에 error 를 남겨 "진짜 항목 0개"와 구분되게 한다.
+                enum_errors.append(f"{category}: {e}")
+                items = []
             cats[category] = items
-        result.append({**row, "categories": cats})
+        row_out = {**row, "categories": cats}
+        if enum_errors:
+            row_out["error"] = "일부 항목을 나열하지 못함 - " + "; ".join(enum_errors)
+        result.append(row_out)
     print(json.dumps({"ok": True, "target": a.target, "libraries": result}, ensure_ascii=False))
 
 
@@ -299,12 +325,103 @@ def _source_meta(cfg):
 
 
 def cmd_unregister(a):
+    """등록 해제. --lib(로컬 경로) 또는 --origin(remote:/market:[/<plugin>]).
+    캐시 삭제는 **원장이 그 캐시를 참조하지 않을 때만** 한다 - hooks/MCP 가 걸려 있으면 거부한다.
+
+    market:<id>/<plugin> 은 그 플러그인 하나만 뺀다 - Library 칸의 플러그인 칩 ✕ 가 이 형태의
+    origin 을 그대로 보내므로, 예전처럼 market:<id> 로 뭉뚱그려 mid 만 뽑으면 플러그인 하나를
+    지우려다 마켓 등록 전체(레포 + 다른 모든 플러그인)를 날려버린다(fix round 1 finding)."""
     # scan 처럼 항상 exit 0 + JSON 으로 응답(runPy 가 nonzero exit 를 throw 하므로 out() 대신 print).
+    if a.origin:
+        cfg = lib_store.load_cfg(a.store)
+        origin = a.origin
+
+        if origin.startswith("remote:"):
+            rid = origin[len("remote:"):]
+            arr = cfg.get("remotes", [])
+            hit = next((x for x in arr if x.get("id") == rid), None)
+            if not hit:
+                print(json.dumps({"ok": True, "message": "이미 없음 (no-op)", "removed": False},
+                                 ensure_ascii=False)); return
+            caches = [hit["cache"]] if hit.get("cache") else []
+            held = []
+            for c in caches:
+                held += lib_store.ledger_refs_root(cfg, c)
+            if held:
+                print(json.dumps({"ok": False,
+                                  "message": f"이 캐시를 참조하는 설치 항목이 {len(held)}건 있어 해제할 수 없습니다",
+                                  "held_by": [h["key"] for h in held]}, ensure_ascii=False)); return
+            arr.remove(hit)
+            lib_store.save_cfg(a.store, cfg)
+            for c in caches:
+                _rmtree_force(c)
+            print(json.dumps({"ok": True, "message": f"등록 해제됨: {origin}", "removed": True},
+                             ensure_ascii=False)); return
+
+        if origin.startswith("market:"):
+            rest = origin[len("market:"):]
+            mid, _, pname = rest.partition("/")
+            mks = cfg.get("marketplaces", [])
+            mhit = next((x for x in mks if x.get("id") == mid), None)
+            if not mhit:
+                print(json.dumps({"ok": True, "message": "이미 없음 (no-op)", "removed": False},
+                                 ensure_ascii=False)); return
+
+            if pname:
+                # 플러그인 단위: 그 플러그인만 빼고 마켓 등록·매니페스트 캐시·다른 플러그인은 안 건드린다.
+                pl = mhit.get("plugins", [])
+                phit = next((p for p in pl if p.get("name") == pname), None)
+                if not phit:
+                    print(json.dumps({"ok": True, "message": "이미 없음 (no-op)", "removed": False},
+                                     ensure_ascii=False)); return
+                pcache = phit.get("cache")
+                # 가드는 이 플러그인의 캐시만 본다 - 다른 플러그인이나 마켓 루트를 붙잡은 원장
+                # 항목이 이 해제를 막으면 안 된다(ledger_refs_root 는 containment 라 pcache 를
+                # 넘기면 pcache 의 하위만 잡고 마켓 루트 같은 조상은 절대 안 잡는다).
+                held = lib_store.ledger_refs_root(cfg, pcache) if pcache else []
+                if held:
+                    print(json.dumps({"ok": False,
+                                      "message": f"이 캐시를 참조하는 설치 항목이 {len(held)}건 있어 해제할 수 없습니다",
+                                      "held_by": [h["key"] for h in held]}, ensure_ascii=False)); return
+                pl.remove(phit)
+                lib_store.save_cfg(a.store, cfg)
+                # 번들(str-path)은 마켓 레포 워킹트리를 공유한다 - 손으로 지우면 매니페스트나
+                # 다른 플러그인까지 같이 날아간다. 등록만 빼고 디스크는 건드리지 않는다.
+                # 외부는 plugins/<name>/ 전체가 이 플러그인 전용이라 통째로 지운다.
+                if phit.get("kind") != "str-path":
+                    _, _, plugins_dir = _market_paths(a.store, mid)
+                    _rmtree_force(os.path.join(plugins_dir, pname))
+                print(json.dumps({"ok": True, "message": f"등록 해제됨: {origin}", "removed": True},
+                                 ensure_ascii=False)); return
+
+            # 마켓 단위(플러그인 세그먼트 없음): 레포 + 모든 플러그인이 한 덩이라 전부 지운다.
+            caches = [mhit.get("cache")] + [p.get("cache") for p in mhit.get("plugins", [])]
+            caches = [c for c in caches if c]
+            held = []
+            for c in caches:
+                held += lib_store.ledger_refs_root(cfg, c)
+            if held:
+                print(json.dumps({"ok": False,
+                                  "message": f"이 캐시를 참조하는 설치 항목이 {len(held)}건 있어 해제할 수 없습니다",
+                                  "held_by": [h["key"] for h in held]}, ensure_ascii=False)); return
+            mks.remove(mhit)
+            lib_store.save_cfg(a.store, cfg)
+            # market 은 repo + plugins 가 <store>/lib-cache/markets/<id>/ 아래 한 덩이라 그 루트를 지운다.
+            _rmtree_force(_lib_cache(a.store, "markets", mid))
+            print(json.dumps({"ok": True, "message": f"등록 해제됨: {origin}", "removed": True},
+                             ensure_ascii=False)); return
+
+        print(json.dumps({"ok": False, "message": f"origin 형식이 아님: {origin}"}, ensure_ascii=False)); return
+
     if not a.lib:
-        print(json.dumps({"ok": False, "message": "제거할 라이브러리 경로(--lib) 필요"}, ensure_ascii=False)); return
+        print(json.dumps({"ok": False, "message": "제거할 라이브러리 경로(--lib) 또는 --origin 필요"},
+                         ensure_ascii=False)); return
     if any(_norm(a.lib) == _norm(e) for e in _env_libs()):
         print(json.dumps({"ok": False, "message": "환경변수(CLAUDE_CONFIG_LIBRARIES)로 지정된 경로는 제거할 수 없습니다"}, ensure_ascii=False)); return
-    removed = _unregister_lib(a.store, a.lib)
+    try:
+        removed = _unregister_lib(a.store, a.lib)
+    except lib_store.StoreNotInitialized:
+        removed = False
     print(json.dumps({"ok": True, "message": "라이브러리 경로 제거됨" if removed else "이미 없음 (no-op)", "removed": removed}, ensure_ascii=False))
 
 
@@ -411,6 +528,22 @@ def _lib_cache(store, *parts):
     return os.path.join(store, "lib-cache", *parts)
 
 
+def _rmtree_force(path):
+    """git 캐시(.git/objects 의 pack/idx 는 읽기전용) 도 지우는 rmtree.
+    ignore_errors=True 만 쓰면 읽기전용 파일에서 조용히 절반만 지워진 캐시가 남는다 -
+    unregister/plugin-fetch 정리가 실제로 끝났다고 오인하게 만든다."""
+    if not os.path.exists(path):
+        return
+
+    def _onerror(func, p, exc_info):
+        try:
+            os.chmod(p, stat.S_IWRITE)
+            func(p)
+        except OSError:
+            pass
+    shutil.rmtree(path, onerror=_onerror)
+
+
 def _id_from_url(url):
     """URL 에서 레포명을 파생. 신뢰할 수 없는 입력이므로 세그먼트 검증을 통과해야 한다."""
     base = url.rstrip("/").split("/")[-1]
@@ -464,6 +597,249 @@ def cmd_remote_add(a):
                       "message": f"원격 라이브러리 등록됨: {rid}"}, ensure_ascii=False))
 
 
+def _market_paths(store, mid):
+    base = _lib_cache(store, "markets", mid)
+    return base, os.path.join(base, "repo"), os.path.join(base, "plugins")
+
+
+def cmd_market_add(a):
+    """마켓 레포를 .claude-plugin/ 만 sparse checkout 해 카탈로그로 등록.
+    실측: 매니페스트만 401K vs 전체 9.7M(24배). 플러그인은 선택 시점에 받는다."""
+    mid = a.id or _id_from_url(a.url)
+    if mid != os.path.basename(mid) or ":" in mid or any(c in mid for c in "\\/"):
+        out(False, f"id 가 유효하지 않음: '{mid}'")
+    _, repo, _ = _market_paths(a.store, mid)
+    try:
+        sha = remote_fetch.materialize(repo, a.url, ref=a.ref or None, sparse=[".claude-plugin"])
+    except remote_fetch.GitError as e:
+        print(json.dumps({"ok": False, "message": str(e)}, ensure_ascii=False)); return
+    try:
+        mf = marketplace.parse_manifest(os.path.join(repo, marketplace.MANIFEST_REL))
+    except marketplace.ManifestError as e:
+        print(json.dumps({"ok": False, "message": f"{e} - 마켓플레이스가 아닌 것 같습니다(remote-add 를 쓰세요)"},
+                         ensure_ascii=False)); return
+    try:
+        cfg = lib_store.load_cfg(a.store)
+        mks = cfg.setdefault("marketplaces", [])
+        prev = next((m for m in mks if m.get("id") == mid), None)
+        rec = {"id": mid, "url": a.url, "ref": a.ref or None, "sha": sha, "fetched_at": _now(),
+               "cache": repo, "name": mf["name"],
+               "plugins": (prev or {}).get("plugins", [])}   # 이미 fetch 한 플러그인은 보존
+        if prev:
+            mks[mks.index(prev)] = rec
+        else:
+            mks.append(rec)
+        lib_store.save_cfg(a.store, cfg)
+    except lib_store.StoreNotInitialized as e:
+        print(json.dumps({"ok": False, "message": str(e), "cache": repo}, ensure_ascii=False)); return
+    cat = marketplace.catalog(mf, {}, limit=0)
+    print(json.dumps({"ok": True, "id": mid, "name": mf["name"], "cache": repo, "sha": sha,
+                      "plugins": cat["total"], "categories": cat["categories"],
+                      "message": f"마켓플레이스 등록됨: {mid} (플러그인 {cat['total']}개)"},
+                     ensure_ascii=False))
+
+
+def cmd_catalog(a):
+    """등록된 마켓의 카탈로그. **네트워크를 타지 않는다** - 캐시된 매니페스트만 읽는다."""
+    cfg = lib_store.load_cfg(a.store)
+    mks = [m for m in cfg.get("marketplaces", []) if not a.marketplace or m.get("id") == a.marketplace]
+    rows, counts, total = [], {}, 0
+    for m in mks:
+        mpath = os.path.join(m.get("cache") or "", marketplace.MANIFEST_REL)
+        if not os.path.exists(mpath):
+            continue      # 캐시가 사라졌으면 그 마켓만 건너뛴다(전체를 죽이지 않음)
+        try:
+            mf = marketplace.parse_manifest(mpath)
+        except marketplace.ManifestError:
+            continue
+        fetched = {p.get("name"): p for p in m.get("plugins", [])}
+        r = marketplace.catalog(mf, fetched, query=a.query, category=a.category,
+                                limit=a.limit, offset=a.offset)
+        total += r["total"]
+        for k, v in r["categories"].items():
+            counts[k] = counts.get(k, 0) + v
+        for row in r["rows"]:
+            rows.append({**row, "marketplace": m.get("id")})
+    print(json.dumps({"ok": True, "total": total, "offset": a.offset, "limit": a.limit,
+                      "categories": counts, "rows": rows}, ensure_ascii=False))
+
+
+def _count_components(root, cmap=None):
+    """fetch 직후 실제 개수. 카탈로그에는 이 칼럼이 없다 - fetch 이후에만 알 수 있으므로.
+
+    _iter_items 는 나열 실패를 삼키지 않는다(fix round 2) - root 자체의 존재는
+    cmd_plugin_fetch 가 이미 등록 전에 확인했지만(같은 라운드의 1번 수정), root 안쪽 더
+    깊은 경로 하나가 읽기 실패할 수는 있다. round 2 는 그 실패를 0 으로 뭉개 크래시만
+    막았는데, 그 결과 "가져옴: 성공, skills 0개" 라는 응답이 나갔다 - 사용자에게는
+    "fetch 는 됐는데 진짜 비어 있다"로 읽혀, 곧바로 이어지는 scan 의 error 와 모순됐다
+    (fix round 3 finding). 0 은 '읽었더니 진짜 없다'와 '못 읽었다'를 구분하지 못하므로
+    실패는 별도 dict 로 갈라 둔다 - 호출부가 실수로 실패를 0 으로 오독할 수 없게 한다.
+
+    반환: {"counts": {카테고리: 성공적으로 읽은 개수, ...},   # 실패한 카테고리는 여기 없음
+           "failed": {카테고리: 실패 사유(str(OSError)), ...}} # 성공한 카테고리는 여기 없음
+    두 dict 의 키 집합은 항상 서로소다 - 카테고리 하나가 동시에 양쪽에 나타나지 않는다."""
+    counts, failed = {}, {}
+    for c in CATEGORIES:
+        try:
+            counts[c] = sum(1 for _ in _iter_items(root, c, cmap))
+        except OSError as e:
+            failed[c] = str(e)
+    return {"counts": counts, "failed": failed}
+
+
+def cmd_plugin_fetch(a):
+    """카탈로그의 플러그인 1개를 물질화해 Library 에 합류시킨다.
+
+    번들(str-path)이면 마켓 레포의 sparse 집합을 그 경로만큼 확장하고(+42K),
+    외부면 그 플러그인만 별도 fetch 한다(~444K). 278개를 미리 받지 않는다."""
+    mid = a.marketplace
+    cfg = lib_store.load_cfg(a.store)
+    m = next((x for x in cfg.get("marketplaces", []) if x.get("id") == mid), None)
+    if not m:
+        out(False, f"등록되지 않은 마켓플레이스: {mid}")
+    try:
+        # 플러그인 이름은 신뢰할 수 없는 입력이다. 디스크를 만지기 전에 검증한다.
+        marketplace.safe_segment(a.plugin, "플러그인 이름")
+        mf = marketplace.parse_manifest(os.path.join(m.get("cache") or "", marketplace.MANIFEST_REL))
+    except (marketplace.ManifestError,) as e:
+        print(json.dumps({"ok": False, "message": str(e)}, ensure_ascii=False)); return
+    entry, canon = marketplace.resolve_plugin(mf, a.plugin)
+    if not entry:
+        print(json.dumps({"ok": False, "message": f"카탈로그에 없는 플러그인: {a.plugin}"},
+                         ensure_ascii=False)); return
+    try:
+        spec = marketplace.source_spec(entry)
+    except marketplace.ManifestError as e:
+        print(json.dumps({"ok": False, "message": str(e)}, ensure_ascii=False)); return
+
+    _, repo, plugins_dir = _market_paths(a.store, mid)
+    prev = next((p for p in m.get("plugins", []) if p.get("name") == canon), None)
+    old_root = (prev or {}).get("cache")          # 0단계: 옛 root 를 먼저 읽어 둔다
+    old_staging = (prev or {}).get("staging")      # 외부 플러그인의 옛 sha 스테이징 루트(있으면)
+
+    try:
+        if spec["kind"] == "str-path":
+            # 번들: 마켓 레포의 sparse 집합을 확장한다(별도 클론 없음). 지울 전용 스테이징이 없다.
+            keep = sorted({".claude-plugin", *[p.get("sparse") for p in m.get("plugins", []) if p.get("sparse")],
+                           spec["path"]})
+            sha = remote_fetch.materialize(repo, m["url"], ref=m.get("ref") or None, sparse=keep)
+            root = os.path.join(repo, *spec["path"].split("/"))
+            sparse = spec["path"]
+            staging = None
+        else:
+            # 외부: plugins/<name>/<sha12>/ 에 완전히 물질화한 뒤에야 옛 sha 를 지운다(1단계).
+            # 디렉토리 이름에는 sha 앞 12자만 쓴다(Windows MAX_PATH 에 28자 여유를 번다,
+            # fix round 2) - 12자는 이 용도로 충돌 걱정 없이 유일하다. 원장/레지스트리에는
+            # 항상 spec["sha"](또는 materialize 가 돌려준 전체 sha)를 그대로 저장한다 -
+            # 식별/비교/원장 참조는 전체 sha 에 의존하므로 여기서 자르면 안 된다.
+            sha_tag = spec["sha"][:12] if spec["sha"] else "head"
+            staging = os.path.join(plugins_dir, canon, sha_tag)
+            sha = remote_fetch.materialize(
+                staging, spec["url"], ref=spec["ref"], sha=spec["sha"],
+                sparse=[spec["path"]] if spec["path"] else None)
+            root = os.path.join(staging, *spec["path"].split("/")) if spec["path"] else staging
+            sparse = None
+    except remote_fetch.GitError as e:
+        print(json.dumps({"ok": False, "message": str(e)}, ensure_ascii=False)); return
+
+    # materialize 가 성공을 보고해도(git rc=0, 예외 없음) 결과 디렉토리가 실제로 없을 수 있다 -
+    # 실측: Windows MAX_PATH(약 260자) 를 넘는 경로는 git 이 파일을 못 쓰는데도 조용히 넘어가고,
+    # 이후 os.path.isdir/os.walk 는 예외 대신 False/빈 결과를 낸다. 그 상태로 원장에 쓰면
+    # "가져옴: 성공, 컴포넌트 0개" 라는 거짓 성공이 나간다(fix round 2 finding) - 등록(원장 쓰기)
+    # 전에 여기서 반드시 확인한다. 번들/외부 두 경로 모두 이 한 지점에서 걸러진다.
+    if not os.path.isdir(root):
+        length = len(root)
+        hint = ""
+        if os.name == "nt" and length >= 200:
+            hint = (" Windows 경로 길이 제한(MAX_PATH≈260자)을 넘었을 가능성이 높습니다 - "
+                    "CLAUDE_SNAPSHOT_STORE 를 더 짧은 경로로 재설정한 뒤 다시 시도하세요.")
+        msg = f"플러그인 캐시 디렉토리를 찾을 수 없음(길이 {length}자): {root}.{hint}"
+        print(json.dumps({"ok": False, "message": msg, "root": root, "root_length": length},
+                         ensure_ascii=False)); return
+
+    layout = remote_fetch.detect_layout(root)
+    # staging 을 rec 에 그대로 들고 있는다 - source.path 가 다단(예: "plugins/sub")이면
+    # os.path.dirname(root) 로 스테이징 루트를 역산하는 건 한 단계 안쪽을 지워 옛 sha 디렉토리
+    # 자체가 살아남는다(git-subdir 가 80/278 로 흔한 종류라 실사용에서 매번 재현된다).
+    rec = {"name": canon, "sha": sha, "fetched_at": _now(), "cache": root, "staging": staging,
+           "map": layout["map"] or None, "sparse": sparse, "kind": spec["kind"]}
+    try:
+        cfg = lib_store.load_cfg(a.store)      # 다시 읽는다(위에서 시간이 흘렀다)
+        m2 = next(x for x in cfg["marketplaces"] if x.get("id") == mid)
+        pl = m2.setdefault("plugins", [])
+        if prev and prev in pl:
+            pl[pl.index(prev)] = rec
+        else:
+            pl.append(rec)
+        lib_store.save_cfg(a.store, cfg)       # 3단계: 원장/레지스트리 갱신
+    except lib_store.StoreNotInitialized as e:
+        print(json.dumps({"ok": False, "message": str(e)}, ensure_ascii=False)); return
+
+    # 4단계: 등록이 성공한 뒤에만 옛 sha 스테이징 디렉토리를 지운다.
+    # 여기 도달하기 전에 실패하면 옛 설치가 계속 동작한다 - 그것이 sha 층을 두는 이유다.
+    # old_staging 이 없으면(번들이었거나 첫 fetch) 지울 전용 디렉토리가 없다는 뜻이니 건드리지 않는다.
+    if old_staging and lib_store.norm(old_staging) != lib_store.norm(staging or "") and \
+       not lib_store.ledger_refs_root(cfg, old_root):
+        _rmtree_force(old_staging)
+
+    comp = _count_components(root, layout["map"])
+    warning = None
+    if comp["failed"]:
+        # fetch 자체는 성공이다(파일은 디스크에 있고 등록도 유효하다) - ok:true 를 유지하되,
+        # "성공 + 0개" 로는 못 읽게 경고를 명시적으로 붙인다(fix round 3). cmd_scan 이 이미
+        # 쓰는 것과 같은 근거(경로 길이 / CLAUDE_SNAPSHOT_STORE)를 재사용한다.
+        length = len(root)
+        hint = ""
+        if os.name == "nt" and length >= 200:
+            hint = (" Windows 경로 길이 제한(MAX_PATH≈260자)을 넘었을 가능성이 높습니다 - "
+                    "CLAUDE_SNAPSHOT_STORE 를 더 짧은 경로로 재설정한 뒤 다시 시도하세요.")
+        cats = ", ".join(sorted(comp["failed"]))
+        warning = f"다음 카테고리는 나열하지 못해 개수를 알 수 없음(0개가 아님): {cats}.{hint}"
+    print(json.dumps({"ok": True, "origin": f"market:{mid}/{canon}", "plugin": canon,
+                      "cache": root, "sha": sha, "components": comp["counts"],
+                      "components_failed": comp["failed"],
+                      "has_hooks": os.path.exists(os.path.join(root, "hooks", "hooks.json")),
+                      "has_mcp": os.path.exists(os.path.join(root, ".mcp.json")),
+                      "message": f"가져옴: {canon}", "warning": warning}, ensure_ascii=False))
+
+
+def cmd_fetch(a):
+    """등록된 remote/market 을 명시적으로 갱신한다. 자동 pull 은 없다 -
+    hooks 라면 매 세션 실행되는 코드가 조용히 바뀌는 것이므로 사용자가 눌러야 한다.
+
+    remotes[]/marketplaces[] 가 별도 배열이고 id 를 레포명에서 파생하므로 둘 다 'my-tools' 일 수 있다.
+    그래서 접두 붙은 origin 형식으로 받는다."""
+    origin = a.origin or ""
+    cfg = lib_store.load_cfg(a.store)
+    if origin.startswith("remote:"):
+        rid = origin[len("remote:"):]
+        r = next((x for x in cfg.get("remotes", []) if x.get("id") == rid), None)
+        if not r:
+            print(json.dumps({"ok": False, "message": f"등록되지 않은 원격: {rid}"}, ensure_ascii=False)); return
+        try:
+            sha = remote_fetch.materialize(r["cache"], r["url"], ref=r.get("ref") or None)
+        except remote_fetch.GitError as e:
+            print(json.dumps({"ok": False, "message": str(e)}, ensure_ascii=False)); return
+        r["sha"], r["fetched_at"] = sha, _now()
+        r["map"] = remote_fetch.detect_layout(r["cache"])["map"] or r.get("map")
+        lib_store.save_cfg(a.store, cfg)
+        print(json.dumps({"ok": True, "origin": origin, "sha": sha, "message": f"갱신됨: {rid}"},
+                         ensure_ascii=False)); return
+    if origin.startswith("market:"):
+        rest = origin[len("market:"):]
+        mid, _, pname = rest.partition("/")
+        if pname:
+            a.marketplace, a.plugin = mid, pname
+            return cmd_plugin_fetch(a)          # 플러그인 갱신 = 재-fetch(원자적 교체 포함)
+        m = next((x for x in cfg.get("marketplaces", []) if x.get("id") == mid), None)
+        if not m:
+            print(json.dumps({"ok": False, "message": f"등록되지 않은 마켓: {mid}"}, ensure_ascii=False)); return
+        a.url, a.ref, a.id = m["url"], m.get("ref"), mid
+        return cmd_market_add(a)                # 매니페스트만 다시 받는다(플러그인은 보존)
+    print(json.dumps({"ok": False, "message": f"origin 형식이 아님(remote:<id> / market:<id>[/<plugin>]): {origin}"},
+                     ensure_ascii=False))
+
+
 def main():
     ap = argparse.ArgumentParser(prog="library")
     ap.add_argument("--store", default=DEFAULT_STORE)
@@ -474,6 +850,7 @@ def main():
     p = sub.add_parser("scan"); p.add_argument("--lib", default=None)
     p.set_defaults(func=cmd_scan)
     p = sub.add_parser("unregister"); p.add_argument("--lib", default=None)
+    p.add_argument("--origin", default=None, help="remote:<id> / market:<id> 등록 해제")
     p.set_defaults(func=cmd_unregister)
     p = sub.add_parser("install"); p.add_argument("category", choices=list(CATEGORIES))
     p.add_argument("path", help="카테고리 루트 기준 상대경로(예: 2-stack/java-spring/error-handling). agents/commands 는 이름")
@@ -489,6 +866,20 @@ def main():
     p.add_argument("--id", default=None); p.add_argument("--map", default=None,
                    help='카테고리 매핑 JSON, 예: {"agents":"Agents","skills":"Skills"}')
     p.set_defaults(func=cmd_remote_add)
+    p = sub.add_parser("market-add")
+    p.add_argument("--url", required=True); p.add_argument("--ref", default=None)
+    p.add_argument("--id", default=None)
+    p.set_defaults(func=cmd_market_add)
+    p = sub.add_parser("catalog")
+    p.add_argument("--marketplace", default=None); p.add_argument("--query", default=None)
+    p.add_argument("--category", default=None)
+    p.add_argument("--limit", type=int, default=50); p.add_argument("--offset", type=int, default=0)
+    p.set_defaults(func=cmd_catalog)
+    p = sub.add_parser("plugin-fetch")
+    p.add_argument("--marketplace", required=True); p.add_argument("--plugin", required=True)
+    p.set_defaults(func=cmd_plugin_fetch)
+    p = sub.add_parser("fetch"); p.add_argument("--origin", required=True)
+    p.set_defaults(func=cmd_fetch)
 
     a = ap.parse_args()
     a.func(a)

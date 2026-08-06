@@ -81,13 +81,25 @@ def ledger_del(cfg: dict, target_root: str, category: str, name: str) -> None:
 
 
 def ledger_refs_root(cfg: dict, cache_root: str) -> list:
-    """cache_root 를 rec["root"] 로 붙잡고 있는 원장 항목 전부.
+    """cache_root 를 rec["root"] 로 붙잡고 있는 원장 항목 전부(그 아래도 포함).
+
+    equality 만 보면 안 된다: 번들(str-path) 플러그인의 root 는
+    <market repo cache>/plugins/<name> 로 마켓 레포 캐시의 **하위**다.
+    unregister --origin market:<id> 는 <store>/lib-cache/markets/<id>/ 전체를
+    지우므로, 그 상위 캐시 자체가 아니라 하위 root 를 붙잡은 hooks/MCP 원장도
+    찾아내야 가드가 뚫리지 않는다. 접두 비교는 구분자를 붙여서 해
+    "...\\abc" 가 "...\\abcdef" 에 거짓 매치되지 않게 한다.
+
     unregister 가 캐시를 지워도 되는지 판단하는 유일한 근거다."""
     want = norm(cache_root)
+    pref = want if want.endswith(os.sep) else want + os.sep
     hits = []
     for tgt, rows in (cfg.get("installed") or {}).items():
         for key, rec in rows.items():
             r = rec.get("root")
-            if r and norm(r) == want:
+            if not r:
+                continue
+            n = norm(r)
+            if n == want or n.startswith(pref):
                 hits.append({"target": tgt, "key": key, "rec": rec})
     return hits
