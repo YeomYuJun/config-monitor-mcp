@@ -668,11 +668,16 @@ def cmd_catalog(a):
     페이지는 **합친 목록 위에서 한 번** 자른다. 마켓별로 limit/offset 을 걸면(구버전)
     offset=40 이 "마켓마다 40개씩 건너뛰기"가 되고 한 페이지에 limit×마켓수 행이 실려
     total 과 어긋난다 - 마켓이 둘 이상이면 페이지 이동이 곧바로 깨진다.
+    (UI 는 --marketplace 로 마켓 하나씩 따로 페이징한다. 그 경우 이 슬라이스가 곧 그 마켓의
+    슬라이스가 되므로 같은 코드가 두 용도를 함께 만족한다.)
+
     각 행에는 어느 마켓/URL 에서 왔는지를 붙인다 - 합쳐 자른 뒤에도 출처가 유지되도록
-    별도 메타 배열이 아니라 행 자체에 담는다."""
+    별도 메타 배열이 아니라 행 자체에 담는다. marketplaces 요약은 그와 별개로 항상 싣는다:
+    UI 가 마켓별 구획을 그리려면 행을 한 줄도 받기 전에 마켓 목록과 각 개수가 필요하다.
+    limit 이 음수면 행을 아예 싣지 않는다(요약 전용 조회)."""
     cfg = lib_store.load_cfg(a.store)
     mks = [m for m in cfg.get("marketplaces", []) if not a.marketplace or m.get("id") == a.marketplace]
-    rows, counts = [], {}
+    rows, counts, summary = [], {}, []
     for m in mks:
         mpath = os.path.join(m.get("cache") or "", marketplace.MANIFEST_REL)
         if not os.path.exists(mpath):
@@ -683,21 +688,29 @@ def cmd_catalog(a):
             continue
         fetched = {p.get("name"): p for p in m.get("plugins", [])}
         r = marketplace.catalog(mf, fetched, query=a.query, category=a.category, limit=0)
+        mname = mf.get("name") or m.get("name") or m.get("id")
+        # total 은 검색/분류 필터를 반영한 개수다 - 마켓 구획 헤더의 개수 pill 과 페이저가
+        # 이 값을 쓰므로 필터 후 개수여야 한다.
+        summary.append({"id": m.get("id"), "name": mname, "url": m.get("url") or "",
+                        "total": r["total"]})
         for k, v in r["categories"].items():
             counts[k] = counts.get(k, 0) + v
         for row in r["rows"]:
             rows.append({**row, "marketplace": m.get("id"),
-                         "market_name": mf.get("name") or m.get("name") or m.get("id"),
-                         "market_url": m.get("url") or ""})
+                         "market_name": mname, "market_url": m.get("url") or ""})
     total = len(rows)
     limit = a.limit if a.limit and a.limit > 0 else 0
     # 검색/필터로 total 이 줄면 옛 offset 이 목록 밖을 가리킨다 - 마지막 페이지로 당긴다.
     offset = max(0, a.offset or 0)
     if limit and offset >= total:
         offset = max(0, ((total - 1) // limit) * limit) if total else 0
-    page = rows[offset:offset + limit] if limit else rows[offset:]
+    if a.limit is not None and a.limit < 0:
+        page = []
+    else:
+        page = rows[offset:offset + limit] if limit else rows[offset:]
     print(json.dumps({"ok": True, "total": total, "offset": offset, "limit": a.limit,
-                      "categories": counts, "rows": page}, ensure_ascii=False))
+                      "categories": counts, "marketplaces": summary, "rows": page},
+                     ensure_ascii=False))
 
 
 def _count_components(root, cmap=None):

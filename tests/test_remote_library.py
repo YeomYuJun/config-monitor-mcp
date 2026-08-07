@@ -1014,6 +1014,28 @@ class MarketAdd(unittest.TestCase):
             self.assertEqual(r["market_name"], "testmarket")
             self.assertEqual(r["market_url"], self.url)
 
+    def test_summary_lists_markets_and_respects_filters(self):
+        """UI 는 마켓별 구획을 그리려고 행보다 마켓 목록을 먼저 받는다(limit<0 = 요약 전용).
+
+        구획 헤더의 개수와 그 구획의 페이저가 이 total 을 쓰므로 필터 후 개수여야 한다."""
+        self.libcmd("market-add", "--url", self.url, "--ref", "main")
+        res = json.loads(self.libcmd("catalog", "--limit", "-1")[1])
+        self.assertEqual(res["rows"], [])                      # 요약만 - 행은 싣지 않는다
+        self.assertEqual(len(res["marketplaces"]), 1)
+        mk = res["marketplaces"][0]
+        self.assertEqual((mk["id"], mk["name"], mk["url"], mk["total"]), ("mk", "testmarket", self.url, 2))
+
+        res = json.loads(self.libcmd("catalog", "--limit", "-1", "--category", "database")[1])
+        self.assertEqual(res["marketplaces"][0]["total"], 1)   # 필터가 마켓별 개수에도 반영된다
+
+    def test_marketplace_filter_pages_that_market_alone(self):
+        # UI 의 마켓별 페이징 경로: --marketplace 로 좁히면 offset/limit 이 그 마켓에만 걸린다.
+        self.libcmd("market-add", "--url", self.url, "--ref", "main")
+        res = json.loads(self.libcmd("catalog", "--marketplace", "mk", "--limit", "1", "--offset", "1")[1])
+        self.assertEqual(res["total"], 2)
+        self.assertEqual(len(res["rows"]), 1)
+        self.assertEqual([m["id"] for m in res["marketplaces"]], ["mk"])
+
     def test_paging_slices_the_merged_list_once(self):
         """페이지는 합친 목록 위에서 한 번 자른다.
 

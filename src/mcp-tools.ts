@@ -541,11 +541,13 @@ export function buildTools(scriptDir: string): ToolDef[] {
       name: "library_catalog",
       meta: {
         title: "Browse Marketplace Catalog",
-        description: "등록된 마켓플레이스의 플러그인 목록(name/description/category/author). **네트워크를 타지 않는다** — 캐시된 매니페스트만 읽는다. '설치 가능 N개' 칼럼은 없다(컴포넌트 선언 엔트리가 4/278 뿐이라 fetch 전에는 알 수 없음)",
+        description: "등록된 마켓플레이스의 플러그인 목록(name/description/category/author)과 마켓 요약(marketplaces[]: id/name/url/total). **네트워크를 타지 않는다** — 캐시된 매니페스트만 읽는다. '설치 가능 N개' 칼럼은 없다(컴포넌트 선언 엔트리가 4/278 뿐이라 fetch 전에는 알 수 없음)",
         inputSchema: z.object({
-          marketplace: z.string().optional(), query: z.string().optional(),
+          marketplace: z.string().optional().describe("지정 시 그 마켓만 — 마켓별로 따로 페이징할 때 쓴다"),
+          query: z.string().optional(),
           category: z.string().optional(),
-          limit: z.number().int().optional(), offset: z.number().int().optional(),
+          limit: z.number().int().optional().describe("음수면 행 없이 요약(marketplaces/categories)만 반환"),
+          offset: z.number().int().optional(),
         }), annotations: READ,
       },
       run: async (a: { marketplace?: string; query?: string; category?: string; limit?: number; offset?: number }) => {

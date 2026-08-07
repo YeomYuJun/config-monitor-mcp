@@ -213,23 +213,64 @@
      로컬 경로 입력행과 git URL 입력행 사이 간격이 유지된다. */
   .libadders{display:flex;flex-direction:column;gap:10px}
   /* 항목/유닛 행의 출처 태그: 같은 이름이 여러 라이브러리에서 올 때 행을 구분하는 유일한 단서. */
-  /* 행의 다른 칸은 전부 고정폭이고 이름칸은 basis 0 이라 줄어들 여지가 없다 -> 이 태그가
-     줄어들지 않으면(0 0 auto) 좁은 창에서 행이 가로로 삐져나온다. 태그를 줄여 말줄임한다. */
-  .libskill .libsrc{font-family:var(--mono);font-size:9.5px;color:var(--mut3);background:#EEF0F4;
-    border:1px solid var(--line2);border-radius:3px;padding:1px 6px;flex:0 1 auto;
-    min-width:0;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  /* 카탈로그: 마켓 단위 구획(어느 URL 에서 온 플러그인인지) + 페이지 이동 바 */
+  /* 출처는 행의 첫 칸이다("어디의 무엇인지"). 행의 다른 칸은 전부 고정폭이고 이름칸은 basis 0 이라
+     줄어들 여지가 없으므로, 이 칸이 안 줄어들면(0 0 auto) 좁은 창에서 행이 가로로 삐져나온다.
+     마지막 수단으로만 말줄임되도록 shrink 를 허용하고 전체 문자열은 title 로 남긴다. */
+  .libskill .libsrc{font-family:var(--mono);font-size:10px;color:#5A6069;background:#EEF1F6;
+    border:1px solid var(--line2);border-radius:4px;padding:2px 7px;flex:0 1 auto;
+    min-width:0;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* 카탈로그: 마켓 단위 구획(어느 URL 에서 온 플러그인인지) + 마켓별 페이지 이동 바.
+     마켓은 서로 다른 출처지 한 목록의 뒷부분이 아니므로 접기와 페이징을 각자 가진다. */
   .catgrp{border:1px solid var(--line2);border-radius:6px;background:var(--panel);margin:9px 0;overflow:hidden}
-  .catgrphead{display:flex;align-items:baseline;gap:9px;padding:7px 11px;background:#F3F4F6;
-    border-bottom:1px solid var(--line2);flex-wrap:wrap}
+  .catgrphead{display:flex;align-items:center;gap:9px;padding:8px 11px;background:#F3F4F6;
+    border-bottom:1px solid var(--line2);cursor:pointer;user-select:none}
+  .catgrphead:hover{background:#ECEEF2}
+  .catgrp.collapsed .catgrphead{border-bottom-color:transparent}
+  .catgrphead .chev2{display:inline-block;transition:transform .15s;color:var(--mut2);font-size:10px;flex:0 0 auto}
+  .catgrp.collapsed .chev2{transform:rotate(-90deg)}
   .catgrphead .mname{font-weight:600;font-size:12.5px;color:var(--fg);flex:0 0 auto}
-  .catgrphead .murl{font-family:var(--mono);font-size:10.5px;color:var(--mut2);word-break:break-all;
-    flex:1;min-width:0}
+  .catgrphead .murl{font-family:var(--mono);font-size:10.5px;color:var(--mut2);flex:0 1 auto;min-width:0;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .catgrpbody{padding:4px 7px 6px}
+  .catgrp.collapsed .catgrpbody{display:none}
+  /* 검색 옆 분류 선택: 기본 select 는 입력칸과 따로 놀아 한 행으로 안 읽힌다 -> 입력칸과 같은 규격 */
+  /* 세로 패딩을 주지 않는다: .adder 는 align-items:stretch 라 select 가 입력칸 높이로 늘어나고
+     select 는 선택된 옵션을 세로 중앙에 그린다 - 두 컨트롤 높이가 계산 없이 정확히 맞는다.
+     shrink 를 허용해야(0 1 auto) 좁은 창에서 검색 입력과 함께 줄어들고 행이 안 삐져나온다. */
+  .catsel{flex:0 1 auto;min-width:88px;max-width:190px;background-color:var(--panel);
+    border:1px solid var(--line2);border-radius:5px;padding:0 30px 0 11px;
+    font-family:var(--mono);font-size:11px;color:var(--fg2);
+    cursor:pointer;outline:none;-webkit-appearance:none;appearance:none;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%236B7077' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+    background-repeat:no-repeat;background-position:right 10px center;background-size:9px 6px}
+  .catsel:hover{border-color:#C3C8D0}
+  .catsel:focus{border-color:var(--accent)}
+
+  /* 중앙 확인 모달: 되돌릴 수 없는 등록 앞에서는 인라인 경고 대신 흐름을 끊는다.
+     z-index 는 setpop-backdrop(65)/toast(60) 위. iframe 안에서도 fixed 는 iframe 뷰포트 기준. */
+  .modalback{position:fixed;inset:0;z-index:80;background:rgba(20,24,34,.42);
+    display:flex;align-items:center;justify-content:center;padding:18px}
+  .modal{width:min(440px,100%);max-height:calc(100vh - 36px);overflow:auto;background:var(--panel);
+    border:1px solid #CAD0D9;border-radius:10px;box-shadow:0 18px 48px rgba(20,24,34,.28)}
+  .modaltitle{padding:15px 18px 0;font-size:14px;font-weight:600;color:var(--fg)}
+  .modalbody{padding:12px 18px 16px;display:flex;flex-direction:column;gap:12px}
+  .modaltext{font-size:12.5px;line-height:1.6;color:var(--fg2)}
+  .modalinput{width:100%;background:#FBFBFC;border:1px solid var(--line2);border-radius:6px;
+    padding:9px 11px;font-family:var(--mono);font-size:11.5px;color:var(--fg);outline:none}
+  .modalinput:focus{border-color:var(--accent)}
+  .modalrow{display:flex;gap:8px;margin-top:2px}
+  .modalrow .addbtn.primary{background:#15171C;color:#fff;border-color:#15171C}
+  .modalrow .addbtn.primary:hover{background:#2A2D35}
+  .modalwarn{display:flex;gap:11px;align-items:flex-start;background:var(--warnbg);
+    border:1px solid rgba(180,83,9,.3);border-radius:8px;padding:12px 13px;
+    font-size:12.5px;line-height:1.6;color:#7C3D08}
+  .modalwarn .ico{font-size:15px;line-height:1.35;flex:0 0 auto}
+  .modalwarn .em{display:block;font-family:var(--mono);font-size:10.5px;color:var(--mut2);
+    word-break:break-all;margin-top:7px}
   .catpager{display:flex;align-items:center;gap:10px;margin-top:11px}
   .catpager .pinfo{font-family:var(--mono);font-size:11px;color:var(--mut2)}
   .catpager button:disabled{opacity:.42;cursor:default}
-  .catpager button:disabled:hover{background:var(--panel);border-color:var(--accent)}
+  .catpager button:disabled:hover{background:var(--panel);border-color:#DDE0E5}
 
   .libcat{border:1px solid var(--line2);border-radius:7px;background:#F6F7FA;margin-bottom:8px;overflow:hidden}
   .libcathead{display:flex;align-items:center;gap:9px;padding:9px 12px;cursor:pointer;user-select:none}

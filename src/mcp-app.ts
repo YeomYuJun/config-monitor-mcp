@@ -76,10 +76,13 @@ const I18N: Record<string, Record<string, string>> = {
     libInstallGroupHint: "이 그룹의 미설치 스킬 전체 설치", libAllInstalled: "이미 전부 설치됨",
     installTarget: "설치 대상", targetGlobal: "전역 (~/.claude)", rootItems: "루트 항목 · 폴더 없음",
     toastGroup: "그룹 설치 완료", toastSel: "선택 설치 완료", cntUnit: "개",
-    catTitle: "마켓플레이스 카탈로그", catSearch: "검색…", catAll: "전체", catFetch: "설치하기",
-    catFetched: "설치됨", catEmpty: "등록된 마켓플레이스 없음",
+    // 섹션 타이틀은 번역하지 않는다 - Library 와 나란히 놓이는 고유 영역명이다.
+    catTitle: "Marketplace", catSearch: "검색…", catAll: "전체", catFetch: "설치하기",
+    catFetched: "설치됨", catEmpty: "등록된 마켓플레이스 없음", catNoPlugins: "조건에 맞는 플러그인 없음",
     catPrev: "‹ 이전", catNext: "다음 ›", catPageOf: "페이지", catNoUrl: "(URL 미기록)",
     catMarketAdd: "마켓 등록", catMarketUrlPlaceholder: "마켓 레포 URL (marketplace.json 보유)",
+    catMarketUrlHint: "등록할 마켓플레이스 레포 URL 을 입력하세요.",
+    catMarketSubmit: "등록", catWarnTitle: "등록 전 확인",
     catCount: "개",
     unitHooks: "hooks", unitMcp: "MCP", unitInstall: "설치", unitRemove: "제거",
     unitHooksHint: "hooks/hooks.json → settings.json", unitMcpHint: ".mcp.json → ~/.claude.json",
@@ -142,10 +145,12 @@ const I18N: Record<string, Record<string, string>> = {
     libInstallGroupHint: "Install all not-installed skills in this group", libAllInstalled: "All already installed",
     installTarget: "Install to", targetGlobal: "Global (~/.claude)", rootItems: "root items · no folder",
     toastGroup: "Group install done", toastSel: "Selected install done", cntUnit: "",
-    catTitle: "Marketplace catalog", catSearch: "Search…", catAll: "All", catFetch: "Install",
-    catFetched: "Installed", catEmpty: "No marketplace registered",
+    catTitle: "Marketplace", catSearch: "Search…", catAll: "All", catFetch: "Install",
+    catFetched: "Installed", catEmpty: "No marketplace registered", catNoPlugins: "No plugin matches",
     catPrev: "‹ Prev", catNext: "Next ›", catPageOf: "page", catNoUrl: "(no URL recorded)",
     catMarketAdd: "Add marketplace", catMarketUrlPlaceholder: "Marketplace repo URL (has marketplace.json)",
+    catMarketUrlHint: "Enter the marketplace repo URL to register.",
+    catMarketSubmit: "Register", catWarnTitle: "Before you register",
     catCount: "",
     unitHooks: "hooks", unitMcp: "MCP", unitInstall: "Install", unitRemove: "Remove",
     unitHooksHint: "hooks/hooks.json → settings.json", unitMcpHint: ".mcp.json → ~/.claude.json",
@@ -244,6 +249,57 @@ function originLabel(origin: string): string {
   return o;
 }
 
+// 화면 중앙 모달. 되돌릴 수 없는 등록/실행 앞에서는 인라인 경고보다 흐름을 끊는 확인이 맞다
+// (인라인 경고는 같은 버튼의 라벨만 바뀌어 읽지 않고 두 번 누르기 쉽다).
+// 배경 클릭과 Esc 로 닫히고, 위젯 iframe 안에서도 fixed 는 iframe 뷰포트 기준이라 중앙에 온다.
+function openModal(title: string, fill: (body: HTMLElement, close: () => void) => void): void {
+  const back = document.createElement("div");
+  back.className = "modalback";
+  const panel = document.createElement("div");
+  panel.className = "modal";
+  const head = document.createElement("div");
+  head.className = "modaltitle";
+  head.textContent = title;
+  const body = document.createElement("div");
+  body.className = "modalbody";
+  const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
+  const close = () => { back.remove(); document.removeEventListener("keydown", onKey); };
+  document.addEventListener("keydown", onKey);
+  back.addEventListener("click", (e) => { if (e.target === back) close(); });
+  panel.append(head, body);
+  back.appendChild(panel);
+  document.body.appendChild(back);
+  fill(body, close);
+}
+
+// 모달 하단 버튼 행. 주 동작이 왼쪽, 취소가 오른쪽(대시보드의 인라인 확인과 같은 배치).
+function modalActions(okLabel: string, onOk: (btn: HTMLButtonElement) => void,
+                      onCancel: () => void): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "modalrow";
+  const ok = document.createElement("button");
+  ok.className = "addbtn primary";
+  ok.textContent = okLabel;
+  ok.addEventListener("click", () => onOk(ok));
+  const no = document.createElement("button");
+  no.textContent = t("cancel");
+  no.addEventListener("click", onCancel);
+  row.append(ok, no);
+  return row;
+}
+
+// 출처 안에서의 짧은 이름(마켓이면 플러그인 세그먼트, 원격이면 id, 로컬이면 디렉토리명).
+// originLabel 이 "어디"라면 이쪽은 "무엇"이다 - 유닛 행은 둘을 각각 다른 칸에 쓴다.
+function originShort(origin: string): string {
+  const o = String(origin || "");
+  if (o.startsWith("market:")) {
+    const rest = o.slice("market:".length);
+    const i = rest.indexOf("/");
+    return i < 0 ? rest : rest.slice(i + 1);
+  }
+  return originLabel(o);
+}
+
 // 항목/유닛 행의 출처 태그. 라벨은 짧게, 전체 경로는 title 로.
 function mkSrcTag(origin: string, path?: string): HTMLElement {
   const s = document.createElement("span");
@@ -259,7 +315,9 @@ let currentRevs: any[] = [];
 let fromRev = "";
 let toRev = "work";
 let detailOpen = true;
-const collapsed = new Set<string>();         // 접힌 섹션 title
+// 기동 시 전 섹션 접힘. Library/Marketplace 는 renderConfig 이후에 그려져 아래 collapsedInit
+// 루프가 못 잡으므로 여기서 미리 넣어 둔다(사용자가 펼치면 그 상태가 세션 내내 유지된다).
+const collapsed = new Set<string>(["Library", "Marketplace"]);   // 접힌 섹션 title
 const secTitles = new Set<string>();         // 접기 가능한 섹션 title (전부 접기 대상)
 let collapsedInit = false;                    // 기본 접힘 1회만 적용
 const libGroupOpen = new Set<string>();      // 펼친 라이브러리 스킬 그룹 경로(기본 접힘)
@@ -452,10 +510,9 @@ function renderConfig(sections: any[]): void {
     wrap!.innerHTML = "";
   }
   const w = wrap!;
+  // 첫 렌더는 전부 접은 상태로 연다 - 8개 분류가 한꺼번에 펼쳐지면 훑을 수가 없다.
   if (!collapsedInit) {
-    for (const sec of sections) {
-      if (/^(Skills|Agents|Scheduled|Desktop)/.test(sec.title)) collapsed.add(sec.title);
-    }
+    for (const sec of sections) collapsed.add(sec.title);
     collapsedInit = true;
   }
   // 스캔 결과의 distinct 프로젝트 경로(등장 순), 칩/필터의 유일 원천(카드 project 값과 동일 소스).
@@ -957,9 +1014,10 @@ function mkLibRow(it: any): HTMLElement {
   bd.className = "badge" + (cls ? " " + cls : "");
   bd.textContent = label + (it.kit_ref ? " · " + t("kitRef") : "");
   if (it.status === "conflict" && it.owner) bd.title = `${t("libOwnedBy")}: ${it.owner}`;
-  // 출처 태그: 로컬 여럿 + 원격 여럿이 한 목록에 섞이면 이름만으로는 같은 스킬이 어디서 왔는지
-  // 구분할 수 없다(스킬 트리는 group 으로 묶어 라이브러리 경계를 지워 버린다).
-  row.append(cb, nm, bd, mkSrcTag(it.origin, it.lib), mkItemActions(it));
+  // 출처를 맨 왼쪽 칸으로 둔다: 로컬 여럿 + 원격 여럿이 한 목록에 섞이면 "어디의 무엇인지"가
+  // 행의 첫 정보여야 한다(스킬 트리는 group 으로 묶어 라이브러리 경계를 지워 버린다).
+  // 꼬리에 달았을 때는 남는 폭이 없어 매번 말줄임으로 잘려 출처 구실을 못 했다.
+  row.append(cb, mkSrcTag(it.origin, it.lib), bd, nm, mkItemActions(it));
   return row;
 }
 
@@ -1190,21 +1248,22 @@ function mkUnitActions(l: any, kind: "hooks" | "mcp", installed: boolean): HTMLE
   return act;
 }
 
-// hooks/MCP 유닛 1행: 플러그인 이름(origin 유래) + 설치 상태 배지 + 출처 태그 + 설치/제거.
+// hooks/MCP 유닛 1행: 항목 행과 같은 칸 순서(출처 · 상태 · 이름 · 동작).
+// 이름 칸에는 짧은 이름만 쓴다 - 출처 칸과 같은 문자열을 두 번 그리면 칸 하나를 낭비한다.
 function mkUnitRow(l: any, kind: "hooks" | "mcp"): HTMLElement {
   const installed = kind === "hooks" ? !!l.hooks_installed : !!l.mcp_installed;
   const row = document.createElement("div");
   row.className = "libskill";
   const nm = document.createElement("span");
   nm.className = "sknm";
-  nm.textContent = originLabel(l.origin);
+  nm.textContent = originShort(l.origin);
   nm.title = l.lib;
   const bd = document.createElement("span");
   bd.className = "badge" + (installed ? " ok" : "");
   bd.textContent = installed ? t("libInstalled") : t("libNotInstalled");
   const detail = kind === "hooks" ? (l.hooks_events || []) : (l.mcp_servers || []);
   if (installed && detail.length) bd.title = detail.join(", ");
-  row.append(nm, bd, mkSrcTag(l.origin, l.lib), mkUnitActions(l, kind, installed));
+  row.append(mkSrcTag(l.origin, l.lib), bd, nm, mkUnitActions(l, kind, installed));
   return row;
 }
 
@@ -1350,10 +1409,14 @@ async function refreshLibrary(): Promise<void> {
 // ----- 마켓플레이스 카탈로그 (Library 칸과 다른 뷰) -----
 // Library 칸 = 가져온 것. 카탈로그 = 가져올 수 있는 것.
 // renderLibrary 로 그리지 않는다 - 매 새로고침마다 전 항목을 eager 렌더하므로 278행이 들어오면 못 쓴다.
-let catQuery = "", catCategory = "", catOffset = 0;
+let catQuery = "", catCategory = "";
 const CAT_PAGE = 40;
-const CAT_SEC = "Marketplace";                 // 접힘 상태 키(collapsed/secTitles 공용)
+const CAT_SEC = "Marketplace";                 // 접힘 상태 키(collapsed/secTitles 공용). t() 와 무관 - 언어를 바꿔도 접힘이 유지된다.
 let catSecEl: HTMLElement | null = null;       // 제자리 교체용 현재 섹션 노드
+// 페이징은 마켓별로 따로 센다. 합친 목록 하나를 넘기면 A 마켓 끝 페이지에서 B 마켓이 이어붙어
+// "7페이지부터 다른 마켓이 나오는" 목록이 된다 - 마켓은 서로 다른 출처지 한 목록의 뒷부분이 아니다.
+const catOffsets: Record<string, number> = {};
+const catOpen = new Set<string>();             // 펼친 마켓 id(기본 접힘 - 마켓 하나가 278개다)
 
 async function renderCatalog(host: HTMLElement): Promise<void> {
   catSecEl = await buildCatalog();
@@ -1379,16 +1442,17 @@ async function reloadCatalog(): Promise<void> {
 }
 
 async function buildCatalog(): Promise<HTMLElement> {
-  let res: any = { ok: true, total: 0, rows: [], categories: {}, offset: catOffset };
+  // limit -1 = 요약만(마켓 목록 + 분류 집계). 행은 마켓 구획을 펼칠 때 그 마켓 것만 받는다.
+  let res: any = { ok: true, total: 0, rows: [], categories: {}, marketplaces: [] };
   try {
     const parsed = jparse(await callTool("library_catalog", {
-      query: catQuery || undefined, category: catCategory || undefined,
-      limit: CAT_PAGE, offset: catOffset,
+      query: catQuery || undefined, category: catCategory || undefined, limit: -1,
     }));
     if (parsed && parsed.ok !== false) res = parsed;
   } catch (e) { console.error("[config-monitor] catalog", e); }
-  // 검색/필터로 total 이 줄면 백엔드가 offset 을 마지막 페이지로 당긴다 - 그 값을 그대로 따라간다.
-  if (typeof res.offset === "number") catOffset = res.offset;
+  // 등록된 마켓이 없으면 접힌 채로 두지 않는다: "마켓 등록"은 이 섹션 본문 안에만 있어서,
+  // 기본 접힘(기동 시 전 섹션 접힘)과 겹치면 처음 쓰는 사람에게 진입점이 아예 안 보인다.
+  if (!(res.marketplaces || []).length) collapsed.delete(CAT_SEC);
 
   const sec = document.createElement("section");
   sec.className = "sec" + (collapsed.has(CAT_SEC) ? " collapsed" : "");
@@ -1416,9 +1480,13 @@ async function buildCatalog(): Promise<HTMLElement> {
   q.placeholder = t("catSearch");
   q.value = catQuery;
   q.addEventListener("keydown", (e) => {
-    if ((e as KeyboardEvent).key === "Enter") { catQuery = q.value.trim(); catOffset = 0; reloadCatalog(); }
+    if ((e as KeyboardEvent).key !== "Enter") return;
+    catQuery = q.value.trim();
+    resetCatOffsets();          // 검색 결과 위에서는 옛 페이지 번호가 의미를 잃는다
+    reloadCatalog();
   });
   const sel = document.createElement("select");
+  sel.className = "catsel";
   const cats = ["", ...Object.keys(res.categories || {}).filter(Boolean).sort()];
   for (const c of cats) {
     const o = document.createElement("option");
@@ -1427,94 +1495,159 @@ async function buildCatalog(): Promise<HTMLElement> {
     if (c === catCategory) o.selected = true;
     sel.appendChild(o);
   }
-  sel.addEventListener("change", () => { catCategory = sel.value; catOffset = 0; reloadCatalog(); });
+  sel.addEventListener("change", () => { catCategory = sel.value; resetCatOffsets(); reloadCatalog(); });
   bar.append(q, sel);
   body.appendChild(bar);
 
-  if (!res.rows.length) {
+  const markets: any[] = res.marketplaces || [];
+  if (!markets.length) {
     const empty = document.createElement("div");
     empty.className = "empty";
     empty.textContent = t("catEmpty");
     body.appendChild(empty);
   }
-  // 마켓이 여럿이면 어느 URL 에서 온 플러그인인지가 이름만으로는 드러나지 않는다 - 마켓 단위로
-  // 구획을 나누고 헤더에 URL 을 박는다. 행은 백엔드가 마켓 순서대로 주므로 연속 구간으로 묶인다.
-  let grpBody: HTMLElement | null = null;
-  let grpKey = " ";
-  for (const row of res.rows) {
-    if (row.marketplace !== grpKey) {
-      grpKey = row.marketplace;
-      const grp = document.createElement("div");
-      grp.className = "catgrp";
-      const gh = document.createElement("div");
-      gh.className = "catgrphead";
-      gh.innerHTML =
-        `<span class="mname">${esc(row.market_name || row.marketplace || "")}</span>` +
-        `<span class="murl">${esc(row.market_url || t("catNoUrl"))}</span>`;
-      grpBody = document.createElement("div");
-      grpBody.className = "catgrpbody";
-      grp.append(gh, grpBody);
-      body.appendChild(grp);
-    }
-    grpBody!.appendChild(mkCatalogRow(row));
-  }
+  // 마켓마다 자기 영역 + 자기 페이저. 검색/분류만 전 마켓에 공통으로 걸린다.
+  for (const m of markets) body.appendChild(mkMarketGroup(m));
 
-  const pages = Math.max(1, Math.ceil((res.total || 0) / CAT_PAGE));
-  const page = Math.min(pages, Math.floor(catOffset / CAT_PAGE) + 1);
-  if (res.total > CAT_PAGE) {
-    const pager = document.createElement("div");
-    pager.className = "catpager";
-    const prev = document.createElement("button");
-    prev.className = "addbtn";
-    prev.textContent = t("catPrev");
-    prev.disabled = catOffset <= 0;
-    prev.addEventListener("click", () => {
-      catOffset = Math.max(0, catOffset - CAT_PAGE); reloadCatalog();
-    });
-    const next = document.createElement("button");
-    next.className = "addbtn";
-    next.textContent = t("catNext");
-    next.disabled = catOffset + CAT_PAGE >= res.total;
-    next.addEventListener("click", () => { catOffset += CAT_PAGE; reloadCatalog(); });
-    const info = document.createElement("span");
-    info.className = "pinfo";
-    info.textContent = `${t("catPageOf")} ${page} / ${pages} · ${res.total}${t("catCount")}`;
-    pager.append(prev, info, next);
-    body.appendChild(pager);
-  }
-
-  // 마켓 등록 입력행(원격 등록과 같은 경고 규율)
-  const mAdder = document.createElement("div");
-  mAdder.className = "adder";
-  const mIn = document.createElement("input");
-  mIn.placeholder = t("catMarketUrlPlaceholder");
   const mBtn = document.createElement("button");
   mBtn.className = "addbtn";
-  mBtn.textContent = t("catMarketAdd");
-  const mWarn = document.createElement("div");
-  mWarn.className = "dlabel";
-  mWarn.style.display = "none";
-  mBtn.addEventListener("click", async () => {
-    const url = mIn.value.trim();
-    if (!url) return;
-    if (mWarn.style.display === "none") {
-      mWarn.textContent = t("libRemoteWarn"); mWarn.style.display = "";
-      mBtn.textContent = t("libRemoteWarnOk"); return;
-    }
-    setPending(mBtn);
-    try {
-      const rr = jparse(await callTool("library_marketplace_add", { url }));
-      if (rr && rr.ok === false) { flashToast(rr.message || t("failed")); clearPending(mBtn, t("catMarketAdd")); return; }
-      flashToast(rr?.message || t("done"));
-      await refresh();
-    } catch (e) { flashToast(t("failed")); clearPending(mBtn, t("failed")); console.error("[config-monitor] market add", e); }
-  });
-  mAdder.append(mIn, mBtn);
-  body.append(mWarn, mAdder);
+  mBtn.style.marginTop = "12px";
+  mBtn.textContent = "＋ " + t("catMarketAdd");
+  mBtn.addEventListener("click", () => openMarketAdd(""));
+  body.appendChild(mBtn);
 
   sec.appendChild(body);
   return sec;
 }
+
+function resetCatOffsets(): void {
+  for (const k of Object.keys(catOffsets)) delete catOffsets[k];
+}
+
+// 마켓 1구획: 헤더(토글 + 이름 + 개수 + URL) + 지연 로드 본문.
+// 접혀 있으면 그 마켓의 행을 아예 받지 않는다 - 마켓 하나가 278개다.
+function mkMarketGroup(m: any): HTMLElement {
+  const grp = document.createElement("div");
+  grp.className = "catgrp" + (catOpen.has(m.id) ? "" : " collapsed");
+  const head = document.createElement("div");
+  head.className = "catgrphead";
+  head.innerHTML =
+    `<span class="chev2">▾</span>` +
+    `<span class="mname">${esc(m.name || m.id || "")}</span>` +
+    `<span class="seccount">${m.total}${esc(t("catCount"))}</span>` +
+    `<span class="murl">${esc(m.url || t("catNoUrl"))}</span>`;
+  const gbody = document.createElement("div");
+  gbody.className = "catgrpbody";
+  head.addEventListener("click", () => {
+    if (catOpen.has(m.id)) { catOpen.delete(m.id); grp.classList.add("collapsed"); return; }
+    catOpen.add(m.id);
+    grp.classList.remove("collapsed");
+    if (!gbody.dataset.loaded) fillMarketBody(gbody, m);
+  });
+  if (catOpen.has(m.id)) fillMarketBody(gbody, m);
+  grp.append(head, gbody);
+  return grp;
+}
+
+// 한 마켓의 현재 페이지만 받아 그 본문만 갈아끼운다 - 섹션 전체를 다시 그리지 않으므로
+// 다른 마켓의 펼침/페이지 상태와 스크롤 위치가 그대로 남는다.
+async function fillMarketBody(body: HTMLElement, m: any): Promise<void> {
+  body.dataset.loaded = "1";
+  body.innerHTML = `<div class="empty">${esc(t("loading"))}</div>`;
+  const off = catOffsets[m.id] || 0;
+  let res: any = { rows: [], total: m.total || 0, offset: off };
+  try {
+    const parsed = jparse(await callTool("library_catalog", {
+      marketplace: m.id, query: catQuery || undefined, category: catCategory || undefined,
+      limit: CAT_PAGE, offset: off,
+    }));
+    if (parsed && parsed.ok !== false) res = parsed;
+  } catch (e) { console.error("[config-monitor] catalog rows", e); }
+  // 필터로 total 이 줄면 백엔드가 offset 을 마지막 페이지로 당긴다 - 그 값을 그대로 따라간다.
+  catOffsets[m.id] = typeof res.offset === "number" ? res.offset : off;
+
+  body.innerHTML = "";
+  if (!res.rows.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = t("catNoPlugins");
+    body.appendChild(empty);
+  }
+  for (const row of res.rows) body.appendChild(mkCatalogRow(row));
+  if (res.total > CAT_PAGE) {
+    body.appendChild(mkPager(res.total, catOffsets[m.id], (next) => {
+      catOffsets[m.id] = next;
+      fillMarketBody(body, m);
+    }));
+  }
+}
+
+function mkPager(total: number, offset: number, go: (offset: number) => void): HTMLElement {
+  const pages = Math.max(1, Math.ceil(total / CAT_PAGE));
+  const page = Math.min(pages, Math.floor(offset / CAT_PAGE) + 1);
+  const pager = document.createElement("div");
+  pager.className = "catpager";
+  const prev = document.createElement("button");
+  prev.className = "addbtn";
+  prev.textContent = t("catPrev");
+  prev.disabled = offset <= 0;
+  prev.addEventListener("click", () => go(Math.max(0, offset - CAT_PAGE)));
+  const next = document.createElement("button");
+  next.className = "addbtn";
+  next.textContent = t("catNext");
+  next.disabled = offset + CAT_PAGE >= total;
+  next.addEventListener("click", () => go(offset + CAT_PAGE));
+  const info = document.createElement("span");
+  info.className = "pinfo";
+  info.textContent = `${t("catPageOf")} ${page} / ${pages} · ${total}${t("catCount")}`;
+  pager.append(prev, info, next);
+  return pager;
+}
+
+// 마켓 등록: URL 입력 모달 -> 경고 확인 모달 -> 그 다음에야 네트워크를 탄다.
+// url 인자는 경고에서 취소하고 돌아왔을 때 입력을 되살리기 위한 것이다.
+function openMarketAdd(url: string): void {
+  openModal(t("catMarketAdd"), (body, close) => {
+    const hint = document.createElement("div");
+    hint.className = "modaltext";
+    hint.textContent = t("catMarketUrlHint");
+    const input = document.createElement("input");
+    input.className = "modalinput";
+    input.placeholder = t("catMarketUrlPlaceholder");
+    input.value = url;
+    const submit = () => {
+      const v = input.value.trim();
+      if (!v) return;
+      close();
+      openMarketWarn(v);
+    };
+    input.addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") submit(); });
+    body.append(hint, input, modalActions(t("catMarketSubmit"), submit, close));
+    setTimeout(() => input.focus(), 0);
+  });
+}
+
+function openMarketWarn(url: string): void {
+  openModal(t("catWarnTitle"), (body, close) => {
+    const warn = document.createElement("div");
+    warn.className = "modalwarn";
+    warn.innerHTML = `<span class="ico">⚠</span><span>${esc(t("libRemoteWarn"))}` +
+      `<span class="em">${esc(url)}</span></span>`;
+    const actions = modalActions(t("libRemoteWarnOk"), async (ok) => {
+      setPending(ok);
+      try {
+        const rr = jparse(await callTool("library_marketplace_add", { url }));
+        if (rr && rr.ok === false) { flashToast(rr.message || t("failed")); clearPending(ok); return; }
+        if (rr?.id) catOpen.add(rr.id);        // 방금 등록한 마켓은 펼친 채로 보여준다
+        flashToast(rr?.message || t("done"));
+        close();
+        await refresh();
+      } catch (e) { clearPending(ok, t("failed")); console.error("[config-monitor] market add", e); }
+    }, () => { close(); openMarketAdd(url); });   // 취소하면 입력을 잃지 않게 URL 모달로 되돌린다
+    body.append(warn, actions);
+  });
+}
+
 
 // 카탈로그 1행: 이름 + 분류 배지(항상) + 설치됨 배지(설치된 경우) + 설치 버튼.
 // 분류 배지를 설치됨으로 갈아치우면 안 된다 - 설치하고 나면 그게 database 였는지 monitoring 이었는지
