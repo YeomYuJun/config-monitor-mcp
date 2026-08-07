@@ -283,7 +283,18 @@ def cmd_scan(a):
         # 카테고리 나열과 달리 실패할 여지도, 느려질 여지도 없다.
         has_hooks = os.path.exists(os.path.join(lib, plugin_units.HOOKS_REL))
         has_mcp = os.path.exists(os.path.join(lib, plugin_units.MCP_REL))
+        # 설치 여부는 원장(타깃 기준)에서 읽는다. 원장 키는 플러그인 **이름**이라 서로 다른
+        # 마켓의 동명 플러그인이 한 칸을 공유한다 - origin 이 일치할 때만 "설치됨"으로 본다
+        # (남의 설치를 내 행의 배지로 표시하고 제거 버튼까지 띄우는 오작동 방지).
+        uname = _unit_name(origin)
+        hrec = lib_store.ledger_get(cfg, a.target, "hooks", uname) or {}
+        mrec = lib_store.ledger_get(cfg, a.target, "mcp", uname) or {}
+        h_own = hrec.get("origin") == origin
+        m_own = mrec.get("origin") == origin
         row = {"lib": lib, "source": src, "origin": origin, "has_hooks": has_hooks, "has_mcp": has_mcp,
+               "hooks_installed": h_own, "mcp_installed": m_own,
+               "hooks_events": hrec.get("events", []) if h_own else [],
+               "mcp_servers": mrec.get("servers", []) if m_own else [],
                **meta.get(origin, {})}
         if not os.path.isdir(lib):
             result.append({**row, "error": "경로 없음", "categories": {}})
@@ -652,10 +663,16 @@ def cmd_market_add(a):
 
 
 def cmd_catalog(a):
-    """등록된 마켓의 카탈로그. **네트워크를 타지 않는다** - 캐시된 매니페스트만 읽는다."""
+    """등록된 마켓의 카탈로그. **네트워크를 타지 않는다** - 캐시된 매니페스트만 읽는다.
+
+    페이지는 **합친 목록 위에서 한 번** 자른다. 마켓별로 limit/offset 을 걸면(구버전)
+    offset=40 이 "마켓마다 40개씩 건너뛰기"가 되고 한 페이지에 limit×마켓수 행이 실려
+    total 과 어긋난다 - 마켓이 둘 이상이면 페이지 이동이 곧바로 깨진다.
+    각 행에는 어느 마켓/URL 에서 왔는지를 붙인다 - 합쳐 자른 뒤에도 출처가 유지되도록
+    별도 메타 배열이 아니라 행 자체에 담는다."""
     cfg = lib_store.load_cfg(a.store)
     mks = [m for m in cfg.get("marketplaces", []) if not a.marketplace or m.get("id") == a.marketplace]
-    rows, counts, total = [], {}, 0
+    rows, counts = [], {}
     for m in mks:
         mpath = os.path.join(m.get("cache") or "", marketplace.MANIFEST_REL)
         if not os.path.exists(mpath):
@@ -665,15 +682,22 @@ def cmd_catalog(a):
         except marketplace.ManifestError:
             continue
         fetched = {p.get("name"): p for p in m.get("plugins", [])}
-        r = marketplace.catalog(mf, fetched, query=a.query, category=a.category,
-                                limit=a.limit, offset=a.offset)
-        total += r["total"]
+        r = marketplace.catalog(mf, fetched, query=a.query, category=a.category, limit=0)
         for k, v in r["categories"].items():
             counts[k] = counts.get(k, 0) + v
         for row in r["rows"]:
-            rows.append({**row, "marketplace": m.get("id")})
-    print(json.dumps({"ok": True, "total": total, "offset": a.offset, "limit": a.limit,
-                      "categories": counts, "rows": rows}, ensure_ascii=False))
+            rows.append({**row, "marketplace": m.get("id"),
+                         "market_name": mf.get("name") or m.get("name") or m.get("id"),
+                         "market_url": m.get("url") or ""})
+    total = len(rows)
+    limit = a.limit if a.limit and a.limit > 0 else 0
+    # 검색/필터로 total 이 줄면 옛 offset 이 목록 밖을 가리킨다 - 마지막 페이지로 당긴다.
+    offset = max(0, a.offset or 0)
+    if limit and offset >= total:
+        offset = max(0, ((total - 1) // limit) * limit) if total else 0
+    page = rows[offset:offset + limit] if limit else rows[offset:]
+    print(json.dumps({"ok": True, "total": total, "offset": offset, "limit": a.limit,
+                      "categories": counts, "rows": page}, ensure_ascii=False))
 
 
 def _count_components(root, cmap=None):
@@ -852,6 +876,22 @@ def cmd_fetch(a):
                      ensure_ascii=False))
 
 
+def _unit_name(origin):
+    """origin -> hooks/mcp 원장 이름. 경로/설정을 읽지 않는 순수 문자열 파생이라
+    scan 처럼 행마다 부르는 자리에서도 store 를 다시 읽지 않는다."""
+    if origin.startswith("remote:"):
+        return origin[len("remote:"):]
+    if origin.startswith("market:"):
+        mid, _, pname = origin[len("market:"):].partition("/")
+        return pname or mid
+    if origin.startswith("local:"):
+        # 경로 전체를 쓴다. basename 으로 줄이면 라이브러리 루트가 대개 ".claude" 라
+        # 등록된 로컬 라이브러리 둘이 같은 원장 칸을 쓰고 뒤에 설치한 쪽이 앞을 덮어써,
+        # 앞 라이브러리의 hooks 를 대시보드에서 제거할 수 없게 된다.
+        return origin[len("local:"):] or origin
+    return origin
+
+
 def _resolve_origin_root(store, origin):
     """origin -> (플러그인 루트 경로, 표시 이름). 미물질화면 (None, name)."""
     if origin.startswith("remote:"):
@@ -868,6 +908,11 @@ def _resolve_origin_root(store, origin):
             return (None, pname or mid)
         p = next((x for x in m.get("plugins", []) if x.get("name") == pname), None)
         return ((p or {}).get("cache"), pname)
+    if origin.startswith("local:"):
+        # 로컬 라이브러리도 hooks/hooks.json / .mcp.json 을 가질 수 있다. origin 이 곧 경로라
+        # 물질화 여부를 물을 것도 없다 - 호출부가 isdir 로 존재만 확인한다.
+        p = origin[len("local:"):]
+        return (p, _unit_name(origin))
     return (None, origin)
 
 

@@ -136,11 +136,38 @@ def op_hook_add(s, event, command, matcher):
     return s, f"hook 추가됨: {event} (matcher={matcher or '*'}) <- {command}", True
 
 def op_hook_remove(s, event, needle):
-    arr = s.get("hooks", {}).get(event, [])
-    before = len(arr)
-    arr[:] = [h for h in arr if needle not in json.dumps(h, ensure_ascii=False)]
-    n = before - len(arr)
-    return s, f"hook 제거됨 {n}건: {event} ~ '{needle}'", n > 0
+    """command 문자열에 needle 이 든 hook 만 제거. 비게 된 matcher 엔트리·이벤트 키도 정리.
+
+    직렬화 결과(json.dumps)에 매칭하면 안 된다: JSON 이 \\ 를 \\\\ 로 이스케이프하므로
+    Windows 경로를 담은 needle(대시보드가 카드에 그대로 표시하는 command 원문)은 영원히
+    0건이 되어 조용히 no-op 으로 끝났다 — plugin_units.entry_refs_root 주석이 짚은
+    findings.md §8 과 같은 결함이다. 파싱된 구조의 command 를 직접 읽는다.
+    matcher 엔트리 통째가 아니라 그 안의 hook 하나만 지운다 — UI 가 나열하는 단위가
+    command 이므로, 같은 matcher 에 묶인 다른 hook 까지 날아가면 안 된다."""
+    hooks = s.get("hooks", {})
+    arr = hooks.get(event, [])
+    kept_entries, removed = [], 0
+    for ent in arr:
+        inner = ent.get("hooks") if isinstance(ent, dict) else None
+        if not isinstance(inner, list) or not inner:
+            kept_entries.append(ent)          # 형식이 다르거나 빈 엔트리는 이 op 의 대상이 아니다
+            continue
+        # dict 가 아닌 항목(오염된 설정)은 command 를 가질 수 없으니 매칭 대상이 아니다 - 보존.
+        kept = [h for h in inner if not (isinstance(h, dict) and needle in str(h.get("command", "")))]
+        removed += len(inner) - len(kept)
+        if kept:
+            ent["hooks"] = kept
+            kept_entries.append(ent)
+    if removed:
+        if kept_entries:
+            hooks[event] = kept_entries
+        else:
+            hooks.pop(event, None)            # 빈 배열을 남기지 않는다
+        if hooks:
+            s["hooks"] = hooks
+        else:
+            s.pop("hooks", None)
+    return s, f"hook 제거됨 {removed}건: {event} ~ '{needle}'", removed > 0
 
 def op_mcp_add(d, name, server):
     servers = d.setdefault("mcpServers", {})

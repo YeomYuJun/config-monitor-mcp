@@ -76,11 +76,14 @@ const I18N: Record<string, Record<string, string>> = {
     libInstallGroupHint: "이 그룹의 미설치 스킬 전체 설치", libAllInstalled: "이미 전부 설치됨",
     installTarget: "설치 대상", targetGlobal: "전역 (~/.claude)", rootItems: "루트 항목 · 폴더 없음",
     toastGroup: "그룹 설치 완료", toastSel: "선택 설치 완료", cntUnit: "개",
-    catTitle: "마켓플레이스 카탈로그", catSearch: "검색…", catAll: "전체", catFetch: "가져오기",
-    catFetched: "가져옴", catEmpty: "등록된 마켓플레이스 없음", catMore: "더 보기",
+    catTitle: "마켓플레이스 카탈로그", catSearch: "검색…", catAll: "전체", catFetch: "설치하기",
+    catFetched: "설치됨", catEmpty: "등록된 마켓플레이스 없음",
+    catPrev: "‹ 이전", catNext: "다음 ›", catPageOf: "페이지", catNoUrl: "(URL 미기록)",
     catMarketAdd: "마켓 등록", catMarketUrlPlaceholder: "마켓 레포 URL (marketplace.json 보유)",
     catCount: "개",
     unitHooks: "hooks", unitMcp: "MCP", unitInstall: "설치", unitRemove: "제거",
+    unitHooksHint: "hooks/hooks.json → settings.json", unitMcpHint: ".mcp.json → ~/.claude.json",
+    unitRemoveConfirm: "제거 확정", unitEmpty: "hooks/MCP 를 가진 라이브러리 없음",
     unitConfirm: "설치 확정 — 매 세션 실행됨", unitFetchFirst: "가져오기 먼저",
     unitInterpWarn: "없음", unitInterpStub: "스텁(실행 실패)",
     unitCmdTitle: "설치될 명령(치환 완료)", unitScopeUser: "user", unitScopeDesktop: "desktop",
@@ -139,11 +142,14 @@ const I18N: Record<string, Record<string, string>> = {
     libInstallGroupHint: "Install all not-installed skills in this group", libAllInstalled: "All already installed",
     installTarget: "Install to", targetGlobal: "Global (~/.claude)", rootItems: "root items · no folder",
     toastGroup: "Group install done", toastSel: "Selected install done", cntUnit: "",
-    catTitle: "Marketplace catalog", catSearch: "Search…", catAll: "All", catFetch: "Fetch",
-    catFetched: "Fetched", catEmpty: "No marketplace registered", catMore: "Load more",
+    catTitle: "Marketplace catalog", catSearch: "Search…", catAll: "All", catFetch: "Install",
+    catFetched: "Installed", catEmpty: "No marketplace registered",
+    catPrev: "‹ Prev", catNext: "Next ›", catPageOf: "page", catNoUrl: "(no URL recorded)",
     catMarketAdd: "Add marketplace", catMarketUrlPlaceholder: "Marketplace repo URL (has marketplace.json)",
     catCount: "",
     unitHooks: "hooks", unitMcp: "MCP", unitInstall: "Install", unitRemove: "Remove",
+    unitHooksHint: "hooks/hooks.json → settings.json", unitMcpHint: ".mcp.json → ~/.claude.json",
+    unitRemoveConfirm: "Confirm remove", unitEmpty: "No library provides hooks/MCP",
     unitConfirm: "Confirm — runs every session", unitFetchFirst: "Fetch first",
     unitInterpWarn: "missing", unitInterpStub: "stub (fails to run)",
     unitCmdTitle: "Commands to install (substituted)", unitScopeUser: "user", unitScopeDesktop: "desktop",
@@ -214,6 +220,39 @@ function jparseLast(t: string): any {
 const basename = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() || p;
 const dirname = (p: string) => { const a = p.split(/[\\/]/); a.pop(); return a.join("\\"); };
 
+// 진행 중 표시. 버튼 모양을 유지하면 아직 누를 수 있는 것처럼 읽히므로 테두리/배경을 벗겨
+// 단순 텍스트로 만들고 실제로도 못 누르게 막는다(중복 요청 방지).
+function setPending(b: HTMLButtonElement, txt = "…"): void {
+  if (!b.classList.contains("pending")) b.dataset.label = b.textContent || "";
+  b.textContent = txt;
+  b.classList.add("pending");
+  b.disabled = true;
+}
+function clearPending(b: HTMLButtonElement, txt?: string): void {
+  b.classList.remove("pending");
+  b.disabled = false;
+  b.textContent = txt ?? b.dataset.label ?? b.textContent ?? "";
+}
+
+// 출처 origin 을 사람이 읽는 짧은 라벨로. 캐시 경로(.../markets/<id>/plugins/<name>/<sha12>)는
+// 화면에 그대로 쓸 수 없고, 여러 라이브러리가 같은 이름의 항목을 줄 때 행을 구분하는 유일한 단서다.
+function originLabel(origin: string): string {
+  const o = String(origin || "");
+  if (o.startsWith("market:")) return o.slice("market:".length);   // <market>/<plugin>
+  if (o.startsWith("remote:")) return o.slice("remote:".length);
+  if (o.startsWith("local:")) return basename(o.slice("local:".length));
+  return o;
+}
+
+// 항목/유닛 행의 출처 태그. 라벨은 짧게, 전체 경로는 title 로.
+function mkSrcTag(origin: string, path?: string): HTMLElement {
+  const s = document.createElement("span");
+  s.className = "libsrc";
+  s.textContent = originLabel(origin);
+  s.title = path ? `${origin}\n${path}` : origin;
+  return s;
+}
+
 // ----- state -----
 let selectedPath = "";
 let currentRevs: any[] = [];
@@ -259,7 +298,7 @@ function buildTrackAdder(extra?: HTMLElement): HTMLElement {
   const submit = async () => {
     const v = input.value.trim();
     if (!v) return;
-    btn.textContent = "…";
+    setPending(btn);
     try {
       const r = jparse(await callTool("config_track", { path: v }));
       const added = r && Array.isArray(r.added) ? r.added.length : 0;
@@ -267,7 +306,7 @@ function buildTrackAdder(extra?: HTMLElement): HTMLElement {
       flashToast(added ? `${t("trackAdd")} ${added} · ${t("done")}` : already ? t("trackAlready") : t("trackNone"));
       input.value = "";
       await refresh();
-    } catch (e) { btn.textContent = t("failed"); console.error("[config-monitor] track add", e); }
+    } catch (e) { clearPending(btn, t("failed")); console.error("[config-monitor] track add", e); }
   };
   btn.addEventListener("click", submit);
   input.addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") submit(); });
@@ -285,13 +324,13 @@ function buildUntrackBtn(p: string): HTMLElement {
   b.addEventListener("click", async (e) => {
     e.stopPropagation();                         // 행 클릭(패널 열기)과 분리
     if (b.dataset.confirm !== "1") { b.dataset.confirm = "1"; b.textContent = t("untrackConfirm"); return; }
-    b.textContent = "…";
+    setPending(b);
     try {
       const r = jparse(await callTool("config_untrack", { path: p }));
-      if (r && r.ok === false) { flashToast(r.message || t("failed")); return; }
+      if (r && r.ok === false) { flashToast(r.message || t("failed")); clearPending(b, "×"); return; }
       flashToast(t("untracked"));
       await refresh();
-    } catch (err) { b.textContent = t("failed"); console.error("[config-monitor] untrack", err); }
+    } catch (err) { clearPending(b, t("failed")); console.error("[config-monitor] untrack", err); }
   });
   return b;
 }
@@ -641,9 +680,20 @@ function buildEditUI(edit: any): HTMLElement {
       chip.replaceChildren(txt, ok, no);
       no.addEventListener("click", () => wrap.replaceWith(buildEditUI(edit)));
       ok.addEventListener("click", async () => {
-        ok.textContent = "…";
-        try { await doRemove(it); flashToast(t("toastRemoved") + " · " + it); await refresh(); }
-        catch (e) { ok.textContent = t("failed"); console.error("[config-monitor] remove", e); }
+        setPending(ok);
+        // 응답을 버리면 안 된다: config_edit 은 "지울 게 없었다"를 ok:true + changed:false 로 알리는데,
+        // 그걸 무시하고 무조건 "제거됨" 토스트를 띄우면 조용한 no-op 이 성공처럼 보인다
+        // (hooks 제거가 오래 안 고쳐진 이유가 이 침묵이다).
+        try {
+          const res = jparse(await doRemove(it));
+          if (res && (res.ok === false || res.changed === false)) {
+            flashToast(res.message || t("failed"));
+            clearPending(ok, t("failed"));
+            return;
+          }
+          flashToast(t("toastRemoved") + " · " + it);
+          await refresh();
+        } catch (e) { clearPending(ok, t("failed")); console.error("[config-monitor] remove", e); }
       });
     });
     chip.append(txt, x);
@@ -661,9 +711,17 @@ function buildEditUI(edit: any): HTMLElement {
   const submit = async () => {
     const v = input.value.trim();
     if (!v) return;
-    add.textContent = "…";
-    try { await doAdd(v); flashToast(t("toastAdded") + " · " + v); await refresh(); }
-    catch (e) { add.textContent = t("failed"); console.error("[config-monitor] add", e); }
+    setPending(add);
+    try {
+      const res = jparse(await doAdd(v));
+      if (res && (res.ok === false || res.changed === false)) {
+        flashToast(res.message || t("failed"));
+        clearPending(add, t("add"));
+        return;
+      }
+      flashToast(t("toastAdded") + " · " + v);
+      await refresh();
+    } catch (e) { clearPending(add, t("failed")); console.error("[config-monitor] add", e); }
   };
   add.addEventListener("click", submit);
   input.addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") submit(); });
@@ -700,13 +758,13 @@ function buildRemoveUI(edit: any): HTMLElement {
     wrap.replaceChildren(ok, no);
     no.addEventListener("click", () => wrap.replaceWith(buildRemoveUI(edit)));
     ok.addEventListener("click", async () => {
-      ok.textContent = "…";
+      setPending(ok);
       try {
         const res = jparse(await doRemove());
-        if (res && res.ok === false) { ok.textContent = t("failed"); flashToast(res.message || t("failed")); return; }
+        if (res && res.ok === false) { clearPending(ok, t("failed")); flashToast(res.message || t("failed")); return; }
         flashToast(t("toastRemoved") + " · " + edit.name);
         await refresh();
-      } catch (e) { ok.textContent = t("failed"); console.error("[config-monitor] remove", e); }
+      } catch (e) { clearPending(ok, t("failed")); console.error("[config-monitor] remove", e); }
     });
   });
   wrap.appendChild(btn);
@@ -732,21 +790,21 @@ function buildAddUI(edit: any): HTMLElement {
     const sp = v.indexOf(" ");
     const name = sp < 0 ? v : v.slice(0, sp);
     const rest = sp < 0 ? "" : v.slice(sp + 1).trim();
-    add.textContent = "…";
+    setPending(add);
     try {
       let res: any;
       if (edit.kind === "mcp-add") {
-        if (!rest) { flashToast(t("needServerJson")); add.textContent = t("add"); return; }
+        if (!rest) { flashToast(t("needServerJson")); clearPending(add, t("add")); return; }
         res = jparse(await callTool("config_mcp_add", { name, serverJson: rest, scope: edit.scope }));
       } else if (edit.kind === "skill-add") {
         res = jparse(await callTool("skill_scaffold", { name, desc: rest || undefined }));
       } else {
         res = jparse(await callTool("config_agent_add", { name, desc: rest || undefined }));
       }
-      if (res && res.ok === false) { add.textContent = t("failed"); flashToast(res.message || t("failed")); return; }
+      if (res && res.ok === false) { clearPending(add, t("failed")); flashToast(res.message || t("failed")); return; }
       flashToast(t("toastAdded") + " · " + name);
       await refresh();
-    } catch (e) { add.textContent = t("failed"); console.error("[config-monitor] add", e); }
+    } catch (e) { clearPending(add, t("failed")); console.error("[config-monitor] add", e); }
   };
   add.addEventListener("click", submit);
   input.addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") submit(); });
@@ -764,6 +822,9 @@ const libStatus = (s: string): [string, string] =>
 // 빈 상태 등록 UI 와 채워진 목록의 "경로 추가" 양쪽에서 재사용.
 function buildLibAdder(): HTMLElement {
   const wrap = document.createElement("div");
+  // 로컬 경로 입력행과 git URL 입력행은 서로 다른 등록이라 붙여 두면 한 폼처럼 읽힌다.
+  // 사이의 경고 박스는 접혀 있을 때 display:none 이라 간격을 만들지 못하므로 컨테이너가 gap 을 준다.
+  wrap.className = "libadders";
   const adder = document.createElement("div");
   adder.className = "adder";
   const input = document.createElement("input");
@@ -774,13 +835,13 @@ function buildLibAdder(): HTMLElement {
   const submit = async () => {
     const v = input.value.trim();
     if (!v) return;
-    btn.textContent = "…";
+    setPending(btn);
     try {
       const r = jparse(await callTool("library_scan", { lib: v }));
-      if (r && r.ok === false) { flashToast(r.message || t("failed")); btn.textContent = t("libRegister"); return; }
+      if (r && r.ok === false) { flashToast(r.message || t("failed")); clearPending(btn, t("libRegister")); return; }
       flashToast(t("libRegistered"));
       await refresh();
-    } catch (e) { btn.textContent = t("failed"); console.error("[config-monitor] lib register", e); }
+    } catch (e) { clearPending(btn, t("failed")); console.error("[config-monitor] lib register", e); }
   };
   btn.addEventListener("click", submit);
   input.addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") submit(); });
@@ -807,13 +868,13 @@ function buildLibAdder(): HTMLElement {
       rBtn.textContent = t("libRemoteWarnOk");
       return;
     }
-    rBtn.textContent = "…";
+    setPending(rBtn);
     try {
       const r = jparse(await callTool("library_remote_add", { url }));
-      if (r && r.ok === false) { flashToast(r.message || t("failed")); rBtn.textContent = t("libRemoteAdd"); return; }
+      if (r && r.ok === false) { flashToast(r.message || t("failed")); clearPending(rBtn, t("libRemoteAdd")); return; }
       flashToast(r?.message || t("libRegistered"));
       await refresh();
-    } catch (e) { rBtn.textContent = t("failed"); console.error("[config-monitor] remote add", e); }
+    } catch (e) { clearPending(rBtn, t("failed")); console.error("[config-monitor] remote add", e); }
   });
   rAdder.append(rInput, rBtn);
   wrap.append(adder, warnBox, rAdder);
@@ -831,13 +892,13 @@ function mkItemActions(it: any): HTMLElement {
     b.addEventListener("click", async (e) => {
       e.stopPropagation();
       if (confirmTxt && b.textContent !== confirmTxt) { b.textContent = confirmTxt; return; } // 2-click 확인
-      b.textContent = "…";
+      setPending(b);
       try {
         const r = jparse(await run());
-        if (r && r.ok === false) { flashToast(r.message || t("failed")); b.textContent = t("failed"); return; }
+        if (r && r.ok === false) { flashToast(r.message || t("failed")); clearPending(b, t("failed")); return; }
         flashToast(`${txt} ${t("done")} · ${it.name}`);
         await refresh();
-      } catch (err) { b.textContent = t("failed"); console.error("[config-monitor] library", err); }
+      } catch (err) { clearPending(b, t("failed")); console.error("[config-monitor] library", err); }
     });
     return b;
   };
@@ -896,7 +957,9 @@ function mkLibRow(it: any): HTMLElement {
   bd.className = "badge" + (cls ? " " + cls : "");
   bd.textContent = label + (it.kit_ref ? " · " + t("kitRef") : "");
   if (it.status === "conflict" && it.owner) bd.title = `${t("libOwnedBy")}: ${it.owner}`;
-  row.append(cb, nm, bd, mkItemActions(it));
+  // 출처 태그: 로컬 여럿 + 원격 여럿이 한 목록에 섞이면 이름만으로는 같은 스킬이 어디서 왔는지
+  // 구분할 수 없다(스킬 트리는 group 으로 묶어 라이브러리 경계를 지워 버린다).
+  row.append(cb, nm, bd, mkSrcTag(it.origin, it.lib), mkItemActions(it));
   return row;
 }
 
@@ -978,16 +1041,18 @@ function renderSkillTreeBody(skills: any[]): HTMLElement {
   return frag;
 }
 
-// 카테고리 토글 섹션: 헤더(chevron + 제목 + 개수 pill + n 설치됨 + 우측 읽기패턴 힌트) + 접이식 본문.
-function renderCategory(cat: string, items: any[], title: string, hint: string): HTMLElement {
-  const installed = items.filter((i) => i.status === "installed").length;
+// 카테고리 토글 껍데기: 헤더(chevron + 제목 + 개수 pill + n 설치됨 + 우측 읽기패턴 힌트) + 접이식 본문.
+// 본문 구성은 호출부가 넘긴다 - 항목 카테고리(agents/skills/commands)와 유닛 카테고리(hooks/MCP)가
+// 행 모양은 달라도 토글·상태 표기 규율은 같아야 하므로 껍데기만 공유한다.
+function libCatShell(cat: string, title: string, hint: string, count: number, installed: number,
+                     fill: (body: HTMLElement) => void): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = "libcat" + (libOpen.has(cat) ? "" : " collapsed");
   const head = document.createElement("div");
   head.className = "libcathead";
   head.innerHTML =
     `<span class="chev2">▾</span><span class="ctitle">${esc(title)}</span>` +
-    `<span class="seccount">${items.length}</span>` +
+    `<span class="seccount">${count}</span>` +
     (installed ? `<span class="cinst">${installed} ${esc(t("libInstalled"))}</span>` : "") +
     `<span class="chint">${esc(hint)}</span>`;
   head.addEventListener("click", () => {
@@ -996,11 +1061,28 @@ function renderCategory(cat: string, items: any[], title: string, hint: string):
   });
   const body = document.createElement("div");
   body.className = "libcatbody";
-  if (!items.length) body.innerHTML = `<div class="empty">${esc(t("libEmpty"))}</div>`;
-  else if (cat === "skills") body.appendChild(renderSkillTreeBody(items));
-  else for (const it of items) body.appendChild(mkLibRow(it));
+  fill(body);
   wrap.append(head, body);
   return wrap;
+}
+
+function renderCategory(cat: string, items: any[], title: string, hint: string): HTMLElement {
+  const installed = items.filter((i) => i.status === "installed").length;
+  return libCatShell(cat, title, hint, items.length, installed, (body) => {
+    if (!items.length) body.innerHTML = `<div class="empty">${esc(t("libEmpty"))}</div>`;
+    else if (cat === "skills") body.appendChild(renderSkillTreeBody(items));
+    else for (const it of items) body.appendChild(mkLibRow(it));
+  });
+}
+
+// hooks/MCP 카테고리: 라이브러리(플러그인 루트) 단위 행. 항목 복사가 아니라 설정 파일 병합이라
+// 체크박스 일괄 설치에 섞지 않는다 - 매 세션 실행되는 코드라 한 건씩 확인받아야 한다.
+function renderUnitCategory(kind: "hooks" | "mcp", libs: any[], title: string, hint: string): HTMLElement {
+  const installed = libs.filter((l) => (kind === "hooks" ? l.hooks_installed : l.mcp_installed)).length;
+  return libCatShell(kind, title, hint, libs.length, installed, (body) => {
+    if (!libs.length) body.innerHTML = `<div class="empty">${esc(t("unitEmpty"))}</div>`;
+    else for (const l of libs) body.appendChild(mkUnitRow(l, kind));
+  });
 }
 
 // 설치 대상 바(Library 본문 최상단): [설치 대상] [대상 select] ......... [선택 설치 (N)].
@@ -1041,48 +1123,89 @@ function buildTargetBar(allItems: any[]): HTMLElement {
   return bar;
 }
 
-// hooks/MCP 는 캐시 경로를 참조하는 복합 유닛이라 항목 행이 아니라 라이브러리 칩에 붙는다.
+// hooks/MCP 는 leaf 를 복사하는 항목이 아니라 캐시 경로를 참조하는 복합 유닛이다
+// (${CLAUDE_PLUGIN_ROOT} 가 절대 캐시 경로로 치환돼 settings 에 들어간다 - 캐시가 load-bearing).
+// 그래서 Library 안에 agents/skills 와 나란한 자체 카테고리로 두고, 설치 대상(libTarget)도 같이 탄다.
 // 설치 = 매 세션 임의 코드 실행이므로 dryRun 으로 명령 원문을 먼저 보여주고 확인받는다.
-function mkUnitActions(l: any): HTMLElement {
-  const box = document.createElement("span");
-  const mk = (label: string, kind: "hooks" | "mcp") => {
-    const b = document.createElement("button");
-    b.className = "addbtn";
-    b.textContent = label;
-    let confirmed = false;
-    b.addEventListener("click", async () => {
-      const tool = kind === "hooks" ? "library_hooks_install" : "library_mcp_install";
-      if (!confirmed) {
-        b.textContent = "…";
-        try {
-          const dry = jparse(await callTool(tool, { origin: l.origin, dryRun: true }));
-          if (dry && dry.ok === false) { flashToast(dry.message || t("failed")); b.textContent = label; return; }
-          const cmds: string[] = dry?.commands || (dry?.servers || []);
-          const warns: any[] = dry?.warnings || [];
-          const warnTxt = warns.map((w) =>
-            `${w.interp}: ${w.reason === "stub" ? t("unitInterpStub") : t("unitInterpWarn")}`).join(" · ");
-          b.title = `${t("unitCmdTitle")}\n${cmds.join("\n")}` + (warnTxt ? `\n\n⚠ ${warnTxt}` : "");
-          if (warnTxt) flashToast("⚠ " + warnTxt);
-          b.textContent = t("unitConfirm");
-          confirmed = true;
-        } catch (e) { b.textContent = t("failed"); console.error("[config-monitor] unit dry-run", e); }
-        return;
-      }
-      b.textContent = "…";
+function mkUnitActions(l: any, kind: "hooks" | "mcp", installed: boolean): HTMLElement {
+  const act = document.createElement("div");
+  act.className = "edit";
+  const tool = kind === "hooks" ? "library_hooks_install" : "library_mcp_install";
+  const unTool = kind === "hooks" ? "library_hooks_uninstall" : "library_mcp_uninstall";
+  // 설치 대상은 항목 설치와 같은 값을 쓴다 - 이걸 빼면 프로젝트 대상을 골라도 전역 settings 에
+  // 조용히 쓰고, 원장 키(타깃 루트)가 어긋나 설치됨 배지도 영영 켜지지 않는다.
+  const tgt = libTarget ? { targetDir: libTarget } : {};
+
+  const install = document.createElement("button");
+  install.className = "addbtn";
+  // 이미 설치돼 있으면 같은 도구가 재병합(멱등)이므로 "동기화"로 읽히는 게 정확하다.
+  const label = installed ? t("libSync") : t("unitInstall");
+  install.textContent = label;
+  let confirmed = false;
+  install.addEventListener("click", async () => {
+    if (!confirmed) {
+      setPending(install);
       try {
-        const r = jparse(await callTool(tool, { origin: l.origin }));
-        if (r && r.ok === false) { flashToast(r.message || t("failed")); b.textContent = label; confirmed = false; return; }
-        // 백엔드가 warning 을 담아 보내면(예: 스토어 미초기화로 출처를 기록 못함) 성공 메시지에 묻혀
-        // 사라지면 안 된다 - "성공했지만 알아둬야 할 것" 을 그대로 보여준다.
+        const dry = jparse(await callTool(tool, { origin: l.origin, dryRun: true, ...tgt }));
+        if (dry && dry.ok === false) { flashToast(dry.message || t("failed")); clearPending(install, label); return; }
+        const cmds: string[] = dry?.commands || (dry?.servers || []);
+        const warns: any[] = dry?.warnings || [];
+        const warnTxt = warns.map((w) =>
+          `${w.interp}: ${w.reason === "stub" ? t("unitInterpStub") : t("unitInterpWarn")}`).join(" · ");
+        clearPending(install, t("unitConfirm"));
+        install.title = `${t("unitCmdTitle")}\n${cmds.join("\n")}` + (warnTxt ? `\n\n⚠ ${warnTxt}` : "");
+        if (warnTxt) flashToast("⚠ " + warnTxt);
+        confirmed = true;
+      } catch (e) { clearPending(install, t("failed")); console.error("[config-monitor] unit dry-run", e); }
+      return;
+    }
+    setPending(install);
+    try {
+      const r = jparse(await callTool(tool, { origin: l.origin, ...tgt }));
+      if (r && r.ok === false) { flashToast(r.message || t("failed")); clearPending(install, label); confirmed = false; return; }
+      // 백엔드가 warning 을 담아 보내면(예: 스토어 미초기화로 출처를 기록 못함) 성공 메시지에 묻혀
+      // 사라지면 안 된다 - "성공했지만 알아둬야 할 것" 을 그대로 보여준다.
+      flashToast(r?.warning ? `${r?.message || t("done")} ⚠ ${r.warning}` : (r?.message || t("done")));
+      await refresh();
+    } catch (e) { clearPending(install, t("failed")); console.error("[config-monitor] unit install", e); }
+  });
+  act.appendChild(install);
+
+  if (installed) {
+    const rm = document.createElement("button");
+    rm.className = "addbtn";
+    rm.textContent = t("unitRemove");
+    rm.addEventListener("click", async () => {
+      if (rm.textContent !== t("unitRemoveConfirm")) { rm.textContent = t("unitRemoveConfirm"); return; }
+      setPending(rm);
+      try {
+        const r = jparse(await callTool(unTool, { origin: l.origin, ...tgt }));
+        if (r && r.ok === false) { flashToast(r.message || t("failed")); clearPending(rm, t("unitRemove")); return; }
         flashToast(r?.warning ? `${r?.message || t("done")} ⚠ ${r.warning}` : (r?.message || t("done")));
         await refresh();
-      } catch (e) { b.textContent = t("failed"); console.error("[config-monitor] unit install", e); }
+      } catch (e) { clearPending(rm, t("failed")); console.error("[config-monitor] unit uninstall", e); }
     });
-    return b;
-  };
-  if (l.has_hooks) box.appendChild(mk(`${t("unitHooks")} ${t("unitInstall")}`, "hooks"));
-  if (l.has_mcp) box.appendChild(mk(`${t("unitMcp")} ${t("unitInstall")}`, "mcp"));
-  return box;
+    act.appendChild(rm);
+  }
+  return act;
+}
+
+// hooks/MCP 유닛 1행: 플러그인 이름(origin 유래) + 설치 상태 배지 + 출처 태그 + 설치/제거.
+function mkUnitRow(l: any, kind: "hooks" | "mcp"): HTMLElement {
+  const installed = kind === "hooks" ? !!l.hooks_installed : !!l.mcp_installed;
+  const row = document.createElement("div");
+  row.className = "libskill";
+  const nm = document.createElement("span");
+  nm.className = "sknm";
+  nm.textContent = originLabel(l.origin);
+  nm.title = l.lib;
+  const bd = document.createElement("span");
+  bd.className = "badge" + (installed ? " ok" : "");
+  bd.textContent = installed ? t("libInstalled") : t("libNotInstalled");
+  const detail = kind === "hooks" ? (l.hooks_events || []) : (l.mcp_servers || []);
+  if (installed && detail.length) bd.title = detail.join(", ");
+  row.append(nm, bd, mkSrcTag(l.origin, l.lib), mkUnitActions(l, kind, installed));
+  return row;
 }
 
 function renderLibrary(host: HTMLElement, res: any): void {
@@ -1124,6 +1247,10 @@ function renderLibrary(host: HTMLElement, res: any): void {
     body.appendChild(renderCategory("agents", byCat.agents, "Agents", "agents/*.md"));
     body.appendChild(renderCategory("commands", byCat.commands, "Commands", "commands/*.md"));
     body.appendChild(renderCategory("skills", byCat.skills, "Skills", "skills/<name>/SKILL.md"));
+    body.appendChild(renderUnitCategory("hooks", libs.filter((l: any) => l.has_hooks),
+                                        "Hooks", t("unitHooksHint")));
+    body.appendChild(renderUnitCategory("mcp", libs.filter((l: any) => l.has_mcp),
+                                        "MCP", t("unitMcpHint")));
   }
   // 다중 라이브러리 경로 관리(전체 폭): 등록된 경로 목록(제거 가능) + 신규 경로 등록 입력행.
   // env(CLAUDE_CONFIG_LIBRARIES) 지정 경로는 대시보드에서 제거 불가 -> env 태그만 표시.
@@ -1174,7 +1301,7 @@ function renderLibrary(host: HTMLElement, res: any): void {
       chip.replaceChildren(txt, ok, no);
       no.addEventListener("click", () => chip.replaceWith(mkPathChip(l)));
       ok.addEventListener("click", async () => {
-        ok.textContent = "…";
+        setPending(ok);
         try {
           const args = l.source === "registered" ? { lib: l.lib } : { origin: l.origin };
           const r = jparse(await callTool("library_unregister", args));
@@ -1190,7 +1317,6 @@ function renderLibrary(host: HTMLElement, res: any): void {
         } catch (e) { flashToast(t("failed")); console.error("[config-monitor] lib unregister", e); chip.replaceWith(mkPathChip(l)); }
       });
     });
-    if (l.has_hooks || l.has_mcp) chip.appendChild(mkUnitActions(l));
     chip.appendChild(x);
     return chip;
   };
@@ -1226,9 +1352,34 @@ async function refreshLibrary(): Promise<void> {
 // renderLibrary 로 그리지 않는다 - 매 새로고침마다 전 항목을 eager 렌더하므로 278행이 들어오면 못 쓴다.
 let catQuery = "", catCategory = "", catOffset = 0;
 const CAT_PAGE = 40;
+const CAT_SEC = "Marketplace";                 // 접힘 상태 키(collapsed/secTitles 공용)
+let catSecEl: HTMLElement | null = null;       // 제자리 교체용 현재 섹션 노드
 
 async function renderCatalog(host: HTMLElement): Promise<void> {
-  let res: any = { ok: true, total: 0, rows: [], categories: {} };
+  catSecEl = await buildCatalog();
+  host.appendChild(catSecEl);
+}
+
+// 페이지 이동/검색은 카탈로그 섹션만 제자리에서 갈아끼운다. 전체 refresh 를 부르면 설정·Library 까지
+// 다시 그려지면서 스크롤이 맨 위로 튄다("새로고침 된 것 같다"의 정체).
+async function reloadCatalog(): Promise<void> {
+  const scroller = document.querySelector<HTMLElement>(".left");
+  const top = scroller ? scroller.scrollTop : 0;
+  const wasSearching = document.activeElement === document.getElementById("cat-q");
+  const sec = await buildCatalog();
+  if (catSecEl && catSecEl.parentNode) catSecEl.replaceWith(sec);
+  else $("config").appendChild(sec);
+  catSecEl = sec;
+  if (scroller) scroller.scrollTop = top;
+  // 검색 입력은 노드째 교체되므로 포커스가 날아간다 - 검색 중이었으면 캐럿까지 되돌린다.
+  if (wasSearching) {
+    const q = document.getElementById("cat-q") as HTMLInputElement | null;
+    if (q) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
+  }
+}
+
+async function buildCatalog(): Promise<HTMLElement> {
+  let res: any = { ok: true, total: 0, rows: [], categories: {}, offset: catOffset };
   try {
     const parsed = jparse(await callTool("library_catalog", {
       query: catQuery || undefined, category: catCategory || undefined,
@@ -1236,25 +1387,36 @@ async function renderCatalog(host: HTMLElement): Promise<void> {
     }));
     if (parsed && parsed.ok !== false) res = parsed;
   } catch (e) { console.error("[config-monitor] catalog", e); }
+  // 검색/필터로 total 이 줄면 백엔드가 offset 을 마지막 페이지로 당긴다 - 그 값을 그대로 따라간다.
+  if (typeof res.offset === "number") catOffset = res.offset;
 
   const sec = document.createElement("section");
-  sec.className = "sec";
+  sec.className = "sec" + (collapsed.has(CAT_SEC) ? " collapsed" : "");
+  sec.dataset.col = "1";                        // "전부 접기"(#config .sec[data-col]) 대상에 포함
+  secTitles.add(CAT_SEC);
   const head = document.createElement("div");
   head.className = "sechead";
-  head.innerHTML = `<span class="sectitle">${esc(t("catTitle"))}</span>` +
-    `<span class="seccount">${res.total}${esc(t("catCount"))}</span>`;
+  head.innerHTML =
+    `<div class="secrow"><span class="chev2">▾</span>` +
+    `<span class="sectitle">${esc(t("catTitle"))}</span>` +
+    `<span class="seccount">${res.total}${esc(t("catCount"))}</span></div>`;
+  head.addEventListener("click", () => {
+    if (collapsed.has(CAT_SEC)) collapsed.delete(CAT_SEC); else collapsed.add(CAT_SEC);
+    sec.classList.toggle("collapsed");
+  });
   sec.appendChild(head);
 
   const body = document.createElement("div");
-  body.className = "secbody";
+  body.className = "secbody libbody";           // 마켓 구획이 세로로 쌓이도록 그리드 해제
 
   const bar = document.createElement("div");
   bar.className = "adder";
   const q = document.createElement("input");
+  q.id = "cat-q";
   q.placeholder = t("catSearch");
   q.value = catQuery;
   q.addEventListener("keydown", (e) => {
-    if ((e as KeyboardEvent).key === "Enter") { catQuery = q.value.trim(); catOffset = 0; refresh(); }
+    if ((e as KeyboardEvent).key === "Enter") { catQuery = q.value.trim(); catOffset = 0; reloadCatalog(); }
   });
   const sel = document.createElement("select");
   const cats = ["", ...Object.keys(res.categories || {}).filter(Boolean).sort()];
@@ -1265,56 +1427,60 @@ async function renderCatalog(host: HTMLElement): Promise<void> {
     if (c === catCategory) o.selected = true;
     sel.appendChild(o);
   }
-  sel.addEventListener("change", () => { catCategory = sel.value; catOffset = 0; refresh(); });
+  sel.addEventListener("change", () => { catCategory = sel.value; catOffset = 0; reloadCatalog(); });
   bar.append(q, sel);
   body.appendChild(bar);
 
   if (!res.rows.length) {
     const empty = document.createElement("div");
-    empty.className = "dlabel";
+    empty.className = "empty";
     empty.textContent = t("catEmpty");
     body.appendChild(empty);
   }
+  // 마켓이 여럿이면 어느 URL 에서 온 플러그인인지가 이름만으로는 드러나지 않는다 - 마켓 단위로
+  // 구획을 나누고 헤더에 URL 을 박는다. 행은 백엔드가 마켓 순서대로 주므로 연속 구간으로 묶인다.
+  let grpBody: HTMLElement | null = null;
+  let grpKey = " ";
   for (const row of res.rows) {
-    const r = document.createElement("div");
-    r.className = "libskill";
-    const nm = document.createElement("span");
-    nm.className = "sknm";
-    nm.textContent = row.display || row.name;
-    nm.title = row.description || "";
-    const bd = document.createElement("span");
-    bd.className = "badge" + (row.fetched ? " ok" : "");
-    bd.textContent = row.fetched ? t("catFetched") : (row.category || row.kind);
-    const act = document.createElement("div");
-    act.className = "edit";
-    if (!row.fetched) {
-      const b = document.createElement("button");
-      b.className = "addbtn";
-      b.textContent = t("catFetch");
-      b.addEventListener("click", async () => {
-        b.textContent = "…";
-        try {
-          const rr = jparse(await callTool("library_plugin_fetch",
-            { marketplace: row.marketplace, plugin: row.name }));
-          if (rr && rr.ok === false) { flashToast(rr.message || t("failed")); b.textContent = t("catFetch"); return; }
-          // components_failed 가 있으면 개수는 "모름"이지 "0개"가 아니다 - warning 을 성공 메시지에
-          // 묻어 버리면 "가져왔는데 텅 빔" 처럼 보인다(사실은 "가져왔는데 일부를 못 읽음").
-          flashToast(rr?.warning ? `${rr?.message || t("done")} · ${row.name} ⚠ ${rr.warning}`
-            : `${rr?.message || t("done")} · ${row.name}`);
-          await refresh();
-        } catch (e) { flashToast(t("failed")); b.textContent = t("failed"); console.error("[config-monitor] plugin fetch", e); }
-      });
-      act.appendChild(b);
+    if (row.marketplace !== grpKey) {
+      grpKey = row.marketplace;
+      const grp = document.createElement("div");
+      grp.className = "catgrp";
+      const gh = document.createElement("div");
+      gh.className = "catgrphead";
+      gh.innerHTML =
+        `<span class="mname">${esc(row.market_name || row.marketplace || "")}</span>` +
+        `<span class="murl">${esc(row.market_url || t("catNoUrl"))}</span>`;
+      grpBody = document.createElement("div");
+      grpBody.className = "catgrpbody";
+      grp.append(gh, grpBody);
+      body.appendChild(grp);
     }
-    r.append(nm, bd, act);
-    body.appendChild(r);
+    grpBody!.appendChild(mkCatalogRow(row));
   }
-  if (res.total > catOffset + res.rows.length) {
-    const more = document.createElement("button");
-    more.className = "addbtn";
-    more.textContent = t("catMore");
-    more.addEventListener("click", () => { catOffset += CAT_PAGE; refresh(); });
-    body.appendChild(more);
+
+  const pages = Math.max(1, Math.ceil((res.total || 0) / CAT_PAGE));
+  const page = Math.min(pages, Math.floor(catOffset / CAT_PAGE) + 1);
+  if (res.total > CAT_PAGE) {
+    const pager = document.createElement("div");
+    pager.className = "catpager";
+    const prev = document.createElement("button");
+    prev.className = "addbtn";
+    prev.textContent = t("catPrev");
+    prev.disabled = catOffset <= 0;
+    prev.addEventListener("click", () => {
+      catOffset = Math.max(0, catOffset - CAT_PAGE); reloadCatalog();
+    });
+    const next = document.createElement("button");
+    next.className = "addbtn";
+    next.textContent = t("catNext");
+    next.disabled = catOffset + CAT_PAGE >= res.total;
+    next.addEventListener("click", () => { catOffset += CAT_PAGE; reloadCatalog(); });
+    const info = document.createElement("span");
+    info.className = "pinfo";
+    info.textContent = `${t("catPageOf")} ${page} / ${pages} · ${res.total}${t("catCount")}`;
+    pager.append(prev, info, next);
+    body.appendChild(pager);
   }
 
   // 마켓 등록 입력행(원격 등록과 같은 경고 규율)
@@ -1335,19 +1501,64 @@ async function renderCatalog(host: HTMLElement): Promise<void> {
       mWarn.textContent = t("libRemoteWarn"); mWarn.style.display = "";
       mBtn.textContent = t("libRemoteWarnOk"); return;
     }
-    mBtn.textContent = "…";
+    setPending(mBtn);
     try {
       const rr = jparse(await callTool("library_marketplace_add", { url }));
-      if (rr && rr.ok === false) { flashToast(rr.message || t("failed")); mBtn.textContent = t("catMarketAdd"); return; }
+      if (rr && rr.ok === false) { flashToast(rr.message || t("failed")); clearPending(mBtn, t("catMarketAdd")); return; }
       flashToast(rr?.message || t("done"));
       await refresh();
-    } catch (e) { flashToast(t("failed")); mBtn.textContent = t("failed"); console.error("[config-monitor] market add", e); }
+    } catch (e) { flashToast(t("failed")); clearPending(mBtn, t("failed")); console.error("[config-monitor] market add", e); }
   });
   mAdder.append(mIn, mBtn);
   body.append(mWarn, mAdder);
 
   sec.appendChild(body);
-  host.appendChild(sec);
+  return sec;
+}
+
+// 카탈로그 1행: 이름 + 분류 배지(항상) + 설치됨 배지(설치된 경우) + 설치 버튼.
+// 분류 배지를 설치됨으로 갈아치우면 안 된다 - 설치하고 나면 그게 database 였는지 monitoring 이었는지
+// 화면에서 사라져 목록을 훑을 수 없게 된다(설치 상태와 분류는 서로 다른 축이다).
+function mkCatalogRow(row: any): HTMLElement {
+  const r = document.createElement("div");
+  r.className = "libskill";
+  const nm = document.createElement("span");
+  nm.className = "sknm";
+  nm.textContent = row.display || row.name;
+  nm.title = row.description || "";
+  const kind = document.createElement("span");
+  kind.className = "badge";
+  kind.textContent = row.category || row.kind;
+  r.append(nm, kind);
+  if (row.fetched) {
+    const done = document.createElement("span");
+    done.className = "badge ok";
+    done.textContent = t("catFetched");
+    r.appendChild(done);
+  }
+  const act = document.createElement("div");
+  act.className = "edit";
+  if (!row.fetched) {
+    const b = document.createElement("button");
+    b.className = "addbtn";
+    b.textContent = t("catFetch");
+    b.addEventListener("click", async () => {
+      setPending(b);
+      try {
+        const rr = jparse(await callTool("library_plugin_fetch",
+          { marketplace: row.marketplace, plugin: row.name }));
+        if (rr && rr.ok === false) { flashToast(rr.message || t("failed")); clearPending(b, t("catFetch")); return; }
+        // components_failed 가 있으면 개수는 "모름"이지 "0개"가 아니다 - warning 을 성공 메시지에
+        // 묻어 버리면 "가져왔는데 텅 빔" 처럼 보인다(사실은 "가져왔는데 일부를 못 읽음").
+        flashToast(rr?.warning ? `${rr?.message || t("done")} · ${row.name} ⚠ ${rr.warning}`
+          : `${rr?.message || t("done")} · ${row.name}`);
+        await refresh();
+      } catch (e) { flashToast(t("failed")); clearPending(b, t("failed")); console.error("[config-monitor] plugin fetch", e); }
+    });
+    act.appendChild(b);
+  }
+  r.appendChild(act);
+  return r;
 }
 
 // ----- detail panel: history + diff -----
@@ -1542,6 +1753,11 @@ function showErr(hostId: string, label: string, e: unknown): void {
 }
 
 async function refresh(): Promise<void> {
+  // 설치/제거 후의 재렌더로 스크롤이 맨 위로 튀면 작업하던 행을 매번 다시 찾아가야 한다.
+  // 목록 길이가 크게 바뀌면 어차피 어긋나지만, 같은 자리에서 이어 작업하는 경우가 압도적이다.
+  const scroller = document.querySelector<HTMLElement>(".left");
+  const scrollTop = scroller ? scroller.scrollTop : 0;
+  catSecEl = null;
   $("config").innerHTML = `<div class="empty">${esc(t("loading"))}</div>`;
   $("tracked").innerHTML = `<div class="empty">${esc(t("loading"))}</div>`;
   let trackedCount = 0;
@@ -1567,6 +1783,7 @@ async function refresh(): Promise<void> {
   try { await renderCatalog($("config")); } catch (e) { console.error("[config-monitor] catalog", e); }
   const now = new Date().toTimeString().slice(0, 8);
   $("subtitle").textContent = `${t("generatedPrefix")}${trackedCount}${t("generatedMid")}${now}`;
+  if (scroller) scroller.scrollTop = scrollTop;
   refreshWatcher();
 }
 

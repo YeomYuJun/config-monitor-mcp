@@ -1004,6 +1004,50 @@ class MarketAdd(unittest.TestCase):
         self.assertTrue(res["ok"])
         self.assertEqual(res["total"], 0)
 
+    def test_rows_carry_market_provenance(self):
+        # 마켓이 여럿이면 플러그인 이름만으로는 어느 URL 에서 온 것인지 알 수 없다.
+        self.libcmd("market-add", "--url", self.url, "--ref", "main")
+        rows = json.loads(self.libcmd("catalog")[1])["rows"]
+        self.assertTrue(rows)
+        for r in rows:
+            self.assertEqual(r["marketplace"], "mk")
+            self.assertEqual(r["market_name"], "testmarket")
+            self.assertEqual(r["market_url"], self.url)
+
+    def test_paging_slices_the_merged_list_once(self):
+        """페이지는 합친 목록 위에서 한 번 자른다.
+
+        회귀 가드: 마켓별로 limit/offset 을 걸던 구버전은 마켓이 둘이면 offset=1 이
+        "마켓마다 1개씩 건너뛰기"가 되고 한 페이지에 limit x 마켓수 행이 실렸다 -
+        total 과 어긋나 페이지 이동이 곧바로 깨진다."""
+        second = os.path.join(self.tmp, "mk2")
+        os.makedirs(os.path.join(second, ".claude-plugin"))
+        with open(os.path.join(second, ".claude-plugin", "marketplace.json"), "w", encoding="utf-8") as f:
+            json.dump({"name": "second", "plugins": [
+                {"name": "p3", "category": "monitoring", "source": "./plugins/p3"},
+                {"name": "p4", "category": "monitoring", "source": "./plugins/p4"},
+            ]}, f)
+        _git(second, "init", "-q", "-b", "main")
+        _git(second, "-c", "user.email=t@t", "-c", "user.name=t", "add", "-A")
+        _git(second, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
+        url2 = "file:///" + second.replace("\\", "/").lstrip("/")
+        self.libcmd("market-add", "--url", self.url, "--ref", "main")
+        self.libcmd("market-add", "--url", url2, "--ref", "main")
+
+        seen = []
+        for off in (0, 2):
+            res = json.loads(self.libcmd("catalog", "--limit", "2", "--offset", str(off))[1])
+            self.assertEqual(res["total"], 4)
+            self.assertEqual(res["offset"], off)
+            self.assertEqual(len(res["rows"]), 2)      # 마켓수만큼 부풀지 않는다
+            seen += [r["name"] for r in res["rows"]]
+        self.assertEqual(sorted(seen), ["bundled", "external", "p3", "p4"])
+
+        # 목록 밖 offset 은 마지막 페이지로 당겨 빈 화면을 주지 않는다(검색으로 total 이 줄 때).
+        res = json.loads(self.libcmd("catalog", "--limit", "2", "--offset", "99")[1])
+        self.assertEqual(res["offset"], 2)
+        self.assertEqual(len(res["rows"]), 2)
+
 
 @unittest.skipIf(shutil.which("git") is None, "git 없음")
 class PluginFetch(MarketAdd):
@@ -1634,6 +1678,28 @@ class HooksInstall(unittest.TestCase):
         self.libcmd("hooks-install", "--origin", "market:mk/sg", "--settings", self.settings)
         self.libcmd("hooks-install", "--origin", "market:mk/sg", "--settings", self.settings)
         self.assertEqual(len(self._settings()["hooks"]["SessionStart"]), 1)
+
+    def test_scan_reports_hooks_install_state_for_the_owning_origin(self):
+        # Library 의 Hooks 토글이 설치됨/미설치와 제거 버튼을 이 플래그로 그린다.
+        row = lambda: next(l for l in json.loads(self.libcmd("scan")[1])["libraries"]
+                           if l["origin"] == "market:mk/sg")
+        before = row()
+        self.assertTrue(before["has_hooks"])
+        self.assertFalse(before["hooks_installed"])
+        self.libcmd("hooks-install", "--origin", "market:mk/sg", "--settings", self.settings)
+        after = row()
+        self.assertTrue(after["hooks_installed"])
+        self.assertEqual(after["hooks_events"], ["SessionStart"])
+
+        # 원장 키는 플러그인 **이름**이라 다른 마켓의 동명 플러그인이 같은 칸을 본다.
+        # origin 이 다르면 남의 설치를 내 행의 배지로 표시하지 않는다.
+        import lib_store
+        cfg = lib_store.load_cfg(self.store)
+        cfg["marketplaces"][0]["id"] = "other"
+        lib_store.save_cfg(self.store, cfg)
+        other = next(l for l in json.loads(self.libcmd("scan")[1])["libraries"]
+                     if l["origin"] == "market:other/sg")
+        self.assertFalse(other["hooks_installed"])
 
     def test_install_records_root_in_ledger(self):
         self.libcmd("hooks-install", "--origin", "market:mk/sg", "--settings", self.settings)
