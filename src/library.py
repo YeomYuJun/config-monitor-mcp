@@ -567,6 +567,34 @@ def _rmtree_force(path):
     shutil.rmtree(path, onerror=_onerror)
 
 
+def _norm_url(u):
+    """비교 전용 URL 정규화. 후행 슬래시/.git 접미/대소문자만 흡수한다 -
+    같은 레포를 가리키는 표기 차이(github.com/a/b vs github.com/a/b.git)를 중복으로 잡기 위한 것이지
+    URL 을 정규화해 저장하려는 게 아니다(저장은 사용자가 준 표기 그대로)."""
+    s = (u or "").strip().rstrip("/")
+    if s.lower().endswith(".git"):
+        s = s[:-4]
+    return s.casefold()
+
+
+def _dup_checks(entries, eid, url):
+    """(거부 사유, 같은 id 의 기존 레코드). 사유가 있으면 호출부가 ok:false 로 끝낸다.
+
+    id 는 URL 의 레포명에서 파생되므로 서로 다른 두 URL 이 같은 id 를 만들 수 있다
+    (.../a/plugins.git 과 .../b/plugins.git). 그대로 두면 뒤에 등록한 쪽이 앞 레코드를
+    조용히 덮어쓰는데, 이미 fetch 한 플러그인 목록까지 물려받아 다른 레포의 캐시를
+    가리키는 레코드가 된다 - 등록이 아니라 손상이다."""
+    same_id = next((e for e in entries if e.get("id") == eid), None)
+    same_url = next((e for e in entries
+                     if e.get("id") != eid and _norm_url(e.get("url")) == _norm_url(url)), None)
+    if same_url:
+        return (f"이 URL 은 이미 '{same_url.get('id')}' 로 등록돼 있습니다", None)
+    if same_id and _norm_url(same_id.get("url")) != _norm_url(url):
+        return (f"id '{eid}' 는 이미 다른 URL 로 등록돼 있습니다({same_id.get('url')}) - "
+                f"--id 로 다른 이름을 지정하세요", None)
+    return (None, same_id)
+
+
 def _id_from_url(url):
     """URL 에서 레포명을 파생. 신뢰할 수 없는 입력이므로 세그먼트 검증을 통과해야 한다."""
     base = url.rstrip("/").split("/")[-1]
@@ -585,6 +613,9 @@ def cmd_remote_add(a):
     rid = a.id or _id_from_url(a.url)
     if rid != os.path.basename(rid) or ":" in rid or any(c in rid for c in "\\/"):
         out(False, f"id 가 유효하지 않음: '{rid}'")
+    reason, prev = _dup_checks(lib_store.load_cfg(a.store).get("remotes", []), rid, a.url)
+    if reason:
+        print(json.dumps({"ok": False, "message": reason}, ensure_ascii=False)); return
     cache = _lib_cache(a.store, "remotes", rid)
     cmap = None
     if a.map:
@@ -616,8 +647,9 @@ def cmd_remote_add(a):
     except lib_store.StoreNotInitialized as e:
         print(json.dumps({"ok": False, "message": str(e), "cache": cache}, ensure_ascii=False)); return
     print(json.dumps({"ok": True, "id": rid, "origin": f"remote:{rid}", "cache": cache,
-                      "sha": sha, "layout": layout,
-                      "message": f"원격 라이브러리 등록됨: {rid}"}, ensure_ascii=False))
+                      "sha": sha, "layout": layout, "already": bool(prev),
+                      "message": (f"이미 등록된 원격입니다 - 갱신했습니다: {rid}" if prev
+                                  else f"원격 라이브러리 등록됨: {rid}")}, ensure_ascii=False))
 
 
 def _market_paths(store, mid):
@@ -628,9 +660,14 @@ def _market_paths(store, mid):
 def cmd_market_add(a):
     """마켓 레포를 .claude-plugin/ 만 sparse checkout 해 카탈로그로 등록.
     실측: 매니페스트만 401K vs 전체 9.7M(24배). 플러그인은 선택 시점에 받는다."""
+    if not remote_fetch.git_available():
+        print(json.dumps({"ok": False, "message": "git 을 PATH 에서 찾을 수 없습니다"}, ensure_ascii=False)); return
     mid = a.id or _id_from_url(a.url)
     if mid != os.path.basename(mid) or ":" in mid or any(c in mid for c in "\\/"):
         out(False, f"id 가 유효하지 않음: '{mid}'")
+    reason, prev0 = _dup_checks(lib_store.load_cfg(a.store).get("marketplaces", []), mid, a.url)
+    if reason:
+        print(json.dumps({"ok": False, "message": reason}, ensure_ascii=False)); return
     _, repo, _ = _market_paths(a.store, mid)
     try:
         sha = remote_fetch.materialize(repo, a.url, ref=a.ref or None, sparse=[".claude-plugin"])
@@ -656,9 +693,14 @@ def cmd_market_add(a):
     except lib_store.StoreNotInitialized as e:
         print(json.dumps({"ok": False, "message": str(e), "cache": repo}, ensure_ascii=False)); return
     cat = marketplace.catalog(mf, {}, limit=0)
+    # 같은 URL 을 다시 등록한 경우는 거부하지 않는다(매니페스트 갱신이 정당한 동작이다) -
+    # 대신 새로 등록한 것처럼 말하지 않는다. 이미 fetch 한 플러그인은 그대로 보존된다.
     print(json.dumps({"ok": True, "id": mid, "name": mf["name"], "cache": repo, "sha": sha,
                       "plugins": cat["total"], "categories": cat["categories"],
-                      "message": f"마켓플레이스 등록됨: {mid} (플러그인 {cat['total']}개)"},
+                      "already": bool(prev0),
+                      "message": (f"이미 등록된 마켓플레이스입니다 - 매니페스트를 갱신했습니다: {mid} "
+                                  f"(플러그인 {cat['total']}개)" if prev0
+                                  else f"마켓플레이스 등록됨: {mid} (플러그인 {cat['total']}개)")},
                      ensure_ascii=False))
 
 
@@ -689,10 +731,12 @@ def cmd_catalog(a):
         fetched = {p.get("name"): p for p in m.get("plugins", [])}
         r = marketplace.catalog(mf, fetched, query=a.query, category=a.category, limit=0)
         mname = mf.get("name") or m.get("name") or m.get("id")
-        # total 은 검색/분류 필터를 반영한 개수다 - 마켓 구획 헤더의 개수 pill 과 페이저가
-        # 이 값을 쓰므로 필터 후 개수여야 한다.
+        # total 은 필터 후 개수(페이저가 쓴다), total_all 은 필터 전 개수다.
+        # 둘 다 보내야 UI 가 "2 / 284" 로 필터가 걸려 있다는 사실 자체를 드러낼 수 있다 -
+        # 필터 후 개수만 보이면 접힌 섹션에서는 왜 2개인지 알 방법이 없다.
+        # categories 집계는 marketplace.catalog 안에서 필터 **전에** 세므로 그 합이 곧 전체 개수다.
         summary.append({"id": m.get("id"), "name": mname, "url": m.get("url") or "",
-                        "total": r["total"]})
+                        "total": r["total"], "total_all": sum(r["categories"].values())})
         for k, v in r["categories"].items():
             counts[k] = counts.get(k, 0) + v
         for row in r["rows"]:
@@ -708,7 +752,8 @@ def cmd_catalog(a):
         page = []
     else:
         page = rows[offset:offset + limit] if limit else rows[offset:]
-    print(json.dumps({"ok": True, "total": total, "offset": offset, "limit": a.limit,
+    print(json.dumps({"ok": True, "total": total, "total_all": sum(counts.values()),
+                      "offset": offset, "limit": a.limit,
                       "categories": counts, "marketplaces": summary, "rows": page},
                      ensure_ascii=False))
 

@@ -267,6 +267,11 @@
   .modalwarn .ico{font-size:15px;line-height:1.35;flex:0 0 auto}
   .modalwarn .em{display:block;font-family:var(--mono);font-size:10.5px;color:var(--mut2);
     word-break:break-all;margin-top:7px}
+  /* 실패 사유는 모달 안에 남긴다 - 토스트는 몇 초 만에 사라지는데 모달은 그대로 열려 있다. */
+  .modalerr{background:var(--delbg);border:1px solid rgba(192,57,43,.28);border-radius:7px;
+    padding:10px 12px;font-family:var(--mono);font-size:11px;line-height:1.55;color:#A3312A;
+    word-break:break-word;max-height:170px;overflow:auto}
+  .modalerr[hidden]{display:none}
   .catpager{display:flex;align-items:center;gap:10px;margin-top:11px}
   .catpager .pinfo{font-family:var(--mono);font-size:11px;color:var(--mut2)}
   .catpager button:disabled{opacity:.42;cursor:default}

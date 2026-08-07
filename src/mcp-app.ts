@@ -13,8 +13,14 @@ const app = new App({ name: "Config Monitor", version: "0.1.0" });
 const STANDALONE = !!(window as any).__CONFIG_MONITOR_HTTP__;
 
 const $ = (id: string) => document.getElementById(id)!;
-const esc = (s: unknown) =>
-  String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]!));
+// 따옴표까지 막는다: esc 의 결과는 태그 사이뿐 아니라 title="..." 같은 **속성값**에도 들어가고,
+// 그 자리에는 검색어·스냅샷 메시지처럼 사용자가 쓴 문자열이 온다. 따옴표를 남겨두면 속성을
+// 빠져나가 마크업이 깨지거나 다른 속성이 끼어든다. 텍스트 자리에서는 브라우저가 엔티티를
+// 원래 문자로 되돌려 그리므로 부작용이 없다(이 함수의 결과는 항상 innerHTML 로만 들어간다).
+const ESC_MAP: Record<string, string> = {
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+};
+const esc = (s: unknown) => String(s).replace(/[&<>"']/g, (c) => ESC_MAP[c]);
 
 // 카드 값 종류 구분: 서술형 key 는 sans+줄클램프, 그 외(command/args/env/path/tools 등)는 mono 코드형.
 const DESC_KEYS = new Set(["desc", "description", "설명", "summary"]);
@@ -54,7 +60,7 @@ const I18N: Record<string, Record<string, string>> = {
     emptyConfigResp: "설정을 불러오지 못했습니다 (빈 응답)", trackedStatus: "추적 상태", deletedHash: "삭제됨",
     delConfirm: "삭제확정", trashMoveHint: ".trash 로 이동(복구 가능)",
     addNamePlaceholder: "name 설명…", needServerJson: "서버 JSON 필요: name {…}",
-    libSectionTitle: "Library (토글 설치)", libNotInstalled: "미설치", libInstalled: "설치됨", libModified: "변경됨",
+    libSectionTitle: "Library", libNotInstalled: "미설치", libInstalled: "설치됨", libModified: "변경됨",
     libEmpty: "라이브러리 항목 없음", kitRef: "kit참조", done: "완료",
     libInstall: "설치", libSync: "동기화", libSyncConfirm: "덮어쓰기 확정(백업됨)", libUninstallConfirm: "제거 확정(.trash)",
     libUnregistered: "미등록", libPathPlaceholder: "라이브러리 경로 (.claude 구조 디렉토리)", libRegister: "등록", libRegistered: "라이브러리 등록됨",
@@ -83,7 +89,8 @@ const I18N: Record<string, Record<string, string>> = {
     catMarketAdd: "마켓 등록", catMarketUrlPlaceholder: "마켓 레포 URL (marketplace.json 보유)",
     catMarketUrlHint: "등록할 마켓플레이스 레포 URL 을 입력하세요.",
     catMarketSubmit: "등록", catWarnTitle: "등록 전 확인",
-    catCount: "개",
+    catSearchTip: "검색", catCategoryTip: "분류",
+    catBadUrl: "git URL 형식이 아닙니다 (https:// · ssh:// · git:// · file:// 또는 user@host:path)",
     unitHooks: "hooks", unitMcp: "MCP", unitInstall: "설치", unitRemove: "제거",
     unitHooksHint: "hooks/hooks.json → settings.json", unitMcpHint: ".mcp.json → ~/.claude.json",
     unitRemoveConfirm: "제거 확정", unitEmpty: "hooks/MCP 를 가진 라이브러리 없음",
@@ -123,7 +130,7 @@ const I18N: Record<string, Record<string, string>> = {
     emptyConfigResp: "Failed to load settings (empty response)", trackedStatus: "tracked status", deletedHash: "deleted",
     delConfirm: "Confirm delete", trashMoveHint: "Move to .trash (recoverable)",
     addNamePlaceholder: "name description…", needServerJson: "Server JSON required: name {…}",
-    libSectionTitle: "Library (toggle install)", libNotInstalled: "Not installed", libInstalled: "Installed", libModified: "Modified",
+    libSectionTitle: "Library", libNotInstalled: "Not installed", libInstalled: "Installed", libModified: "Modified",
     libEmpty: "No library items", kitRef: "kit ref", done: "done",
     libInstall: "Install", libSync: "Sync", libSyncConfirm: "Confirm overwrite (backed up)", libUninstallConfirm: "Confirm remove (.trash)",
     libUnregistered: "Unregistered", libPathPlaceholder: "Library path (.claude-structured directory)", libRegister: "Register", libRegistered: "Library registered",
@@ -151,7 +158,8 @@ const I18N: Record<string, Record<string, string>> = {
     catMarketAdd: "Add marketplace", catMarketUrlPlaceholder: "Marketplace repo URL (has marketplace.json)",
     catMarketUrlHint: "Enter the marketplace repo URL to register.",
     catMarketSubmit: "Register", catWarnTitle: "Before you register",
-    catCount: "",
+    catSearchTip: "search", catCategoryTip: "category",
+    catBadUrl: "Not a git URL (https:// · ssh:// · git:// · file:// or user@host:path)",
     unitHooks: "hooks", unitMcp: "MCP", unitInstall: "Install", unitRemove: "Remove",
     unitHooksHint: "hooks/hooks.json → settings.json", unitMcpHint: ".mcp.json → ~/.claude.json",
     unitRemoveConfirm: "Confirm remove", unitEmpty: "No library provides hooks/MCP",
@@ -1463,7 +1471,8 @@ async function buildCatalog(): Promise<HTMLElement> {
   head.innerHTML =
     `<div class="secrow"><span class="chev2">▾</span>` +
     `<span class="sectitle">${esc(t("catTitle"))}</span>` +
-    `<span class="seccount">${res.total}${esc(t("catCount"))}</span></div>`;
+    `<span class="seccount" title="${esc(catFilterTip())}">` +
+    `${esc(countLabel(res.total, res.total_all))}</span></div>`;
   head.addEventListener("click", () => {
     if (collapsed.has(CAT_SEC)) collapsed.delete(CAT_SEC); else collapsed.add(CAT_SEC);
     sec.classList.toggle("collapsed");
@@ -1524,6 +1533,23 @@ function resetCatOffsets(): void {
   for (const k of Object.keys(catOffsets)) delete catOffsets[k];
 }
 
+// 검색/분류가 걸려 있으면 "2 / 284" 로 전체 대비 몇 개인지 함께 보여준다.
+// 필터 후 개수만 그리면 접힌 섹션에서는 왜 2개인지 알 수가 없고, 필터가 남아 있다는 사실
+// 자체가 사라진다 - 검색어는 접힌 본문 안에 있어 보이지 않는다.
+function countLabel(total: number, totalAll?: number): string {
+  const all = typeof totalAll === "number" ? totalAll : total;
+  return catFiltering() && all !== total ? `${total} / ${all}` : String(all);
+}
+const catFiltering = (): boolean => !!(catQuery || catCategory);
+
+// 접힌 상태에서도 무엇이 걸려 있는지 알 수 있게 개수 pill 의 title 에 조건을 적어 둔다.
+function catFilterTip(): string {
+  const parts: string[] = [];
+  if (catQuery) parts.push(`${t("catSearchTip")}: ${catQuery}`);
+  if (catCategory) parts.push(`${t("catCategoryTip")}: ${catCategory}`);
+  return parts.join(" · ");
+}
+
 // 마켓 1구획: 헤더(토글 + 이름 + 개수 + URL) + 지연 로드 본문.
 // 접혀 있으면 그 마켓의 행을 아예 받지 않는다 - 마켓 하나가 278개다.
 function mkMarketGroup(m: any): HTMLElement {
@@ -1534,7 +1560,8 @@ function mkMarketGroup(m: any): HTMLElement {
   head.innerHTML =
     `<span class="chev2">▾</span>` +
     `<span class="mname">${esc(m.name || m.id || "")}</span>` +
-    `<span class="seccount">${m.total}${esc(t("catCount"))}</span>` +
+    `<span class="seccount" title="${esc(catFilterTip())}">` +
+    `${esc(countLabel(m.total, m.total_all))}</span>` +
     `<span class="murl">${esc(m.url || t("catNoUrl"))}</span>`;
   const gbody = document.createElement("div");
   gbody.className = "catgrpbody";
@@ -1599,13 +1626,20 @@ function mkPager(total: number, offset: number, go: (offset: number) => void): H
   next.addEventListener("click", () => go(offset + CAT_PAGE));
   const info = document.createElement("span");
   info.className = "pinfo";
-  info.textContent = `${t("catPageOf")} ${page} / ${pages} · ${total}${t("catCount")}`;
+  info.textContent = `${t("catPageOf")} ${page} / ${pages} · ${total}`;
   pager.append(prev, info, next);
   return pager;
 }
 
 // 마켓 등록: URL 입력 모달 -> 경고 확인 모달 -> 그 다음에야 네트워크를 탄다.
 // url 인자는 경고에서 취소하고 돌아왔을 때 입력을 되살리기 위한 것이다.
+// 백엔드(remote_fetch._validate_url / marketplace._validate_source_url)의 허용 스킴과 같은 규율.
+// 서버가 어차피 다시 검증하지만, 여기서 걸러야 오타 하나에 git clone 왕복을 태우지 않고
+// "왜 안 되는지"를 입력칸 바로 아래에서 알려줄 수 있다.
+const GIT_URL_RE = /^(https?|ssh|git|file):\/\/\S+$/i;
+const SCP_URL_RE = /^[A-Za-z0-9_.~-]+@[A-Za-z0-9_.-]+:[A-Za-z0-9_./~-]\S*$/;
+const looksLikeGitUrl = (u: string): boolean => GIT_URL_RE.test(u) || SCP_URL_RE.test(u);
+
 function openMarketAdd(url: string): void {
   openModal(t("catMarketAdd"), (body, close) => {
     const hint = document.createElement("div");
@@ -1615,14 +1649,24 @@ function openMarketAdd(url: string): void {
     input.className = "modalinput";
     input.placeholder = t("catMarketUrlPlaceholder");
     input.value = url;
+    const err = document.createElement("div");
+    err.className = "modalerr";
+    err.hidden = true;
     const submit = () => {
       const v = input.value.trim();
       if (!v) return;
+      if (!looksLikeGitUrl(v)) {
+        err.textContent = t("catBadUrl");
+        err.hidden = false;
+        input.focus();
+        return;
+      }
       close();
       openMarketWarn(v);
     };
+    input.addEventListener("input", () => { err.hidden = true; });
     input.addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") submit(); });
-    body.append(hint, input, modalActions(t("catMarketSubmit"), submit, close));
+    body.append(hint, input, err, modalActions(t("catMarketSubmit"), submit, close));
     setTimeout(() => input.focus(), 0);
   });
 }
@@ -1633,18 +1677,34 @@ function openMarketWarn(url: string): void {
     warn.className = "modalwarn";
     warn.innerHTML = `<span class="ico">⚠</span><span>${esc(t("libRemoteWarn"))}` +
       `<span class="em">${esc(url)}</span></span>`;
+    // 실패 사유는 토스트로만 흘리지 않는다: git 오류 원문은 길고 몇 초 만에 사라지는데,
+    // 모달은 열린 채로 남아 사용자는 무엇이 잘못됐는지 모른 채 같은 버튼을 다시 누르게 된다.
+    const err = document.createElement("div");
+    err.className = "modalerr";
+    err.hidden = true;
     const actions = modalActions(t("libRemoteWarnOk"), async (ok) => {
+      err.hidden = true;
       setPending(ok);
       try {
         const rr = jparse(await callTool("library_marketplace_add", { url }));
-        if (rr && rr.ok === false) { flashToast(rr.message || t("failed")); clearPending(ok); return; }
-        if (rr?.id) catOpen.add(rr.id);        // 방금 등록한 마켓은 펼친 채로 보여준다
+        if (rr && rr.ok === false) {
+          err.textContent = rr.message || t("failed");
+          err.hidden = false;
+          clearPending(ok, t("libRemoteWarnOk"));
+          return;
+        }
+        if (rr?.id) catOpen.add(rr.id);        // 새로 등록된 마켓은 펼친 채로 보여준다
         flashToast(rr?.message || t("done"));
         close();
         await refresh();
-      } catch (e) { clearPending(ok, t("failed")); console.error("[config-monitor] market add", e); }
+      } catch (e) {
+        err.textContent = String(e);
+        err.hidden = false;
+        clearPending(ok, t("libRemoteWarnOk"));
+        console.error("[config-monitor] market add", e);
+      }
     }, () => { close(); openMarketAdd(url); });   // 취소하면 입력을 잃지 않게 URL 모달로 되돌린다
-    body.append(warn, actions);
+    body.append(warn, err, actions);
   });
 }
 

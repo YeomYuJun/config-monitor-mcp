@@ -1014,6 +1014,47 @@ class MarketAdd(unittest.TestCase):
             self.assertEqual(r["market_name"], "testmarket")
             self.assertEqual(r["market_url"], self.url)
 
+    def test_reregistering_same_url_says_so_instead_of_pretending_its_new(self):
+        # 같은 URL 재등록은 정당한 갱신이다 - 거부하지 않되 "새로 등록됨"이라고 말하지도 않는다.
+        self.libcmd("market-add", "--url", self.url, "--ref", "main")
+        rc, out, err = self.libcmd("market-add", "--url", self.url, "--ref", "main")
+        self.assertEqual(rc, 0, err)
+        res = json.loads(out)
+        self.assertTrue(res["ok"])
+        self.assertTrue(res["already"])
+        self.assertIn("이미 등록", res["message"])
+
+    def test_same_url_under_a_different_id_is_rejected(self):
+        self.libcmd("market-add", "--url", self.url, "--ref", "main")
+        rc, out, err = self.libcmd("market-add", "--url", self.url + "/", "--ref", "main",
+                                   "--id", "other")
+        res = json.loads(out)
+        self.assertFalse(res["ok"])
+        self.assertIn("mk", res["message"])          # 어느 id 로 이미 등록됐는지 알려준다
+
+    def test_id_collision_from_two_different_urls_is_rejected_not_overwritten(self):
+        """레포명이 같은 다른 URL 두 개는 같은 id 를 만든다.
+
+        회귀 가드: 조용히 덮어쓰면 뒤엣것이 앞 레코드의 plugins[](이미 fetch 한 캐시 경로)를
+        물려받아, 다른 레포의 캐시를 가리키는 레코드가 된다 - 등록이 아니라 손상이다."""
+        other = os.path.join(self.tmp, "nest", "mk")
+        os.makedirs(os.path.join(other, ".claude-plugin"))
+        with open(os.path.join(other, ".claude-plugin", "marketplace.json"), "w", encoding="utf-8") as f:
+            json.dump({"name": "impostor", "plugins": []}, f)
+        _git(other, "init", "-q", "-b", "main")
+        _git(other, "-c", "user.email=t@t", "-c", "user.name=t", "add", "-A")
+        _git(other, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
+        url2 = "file:///" + other.replace("\\", "/").lstrip("/")
+
+        self.libcmd("market-add", "--url", self.url, "--ref", "main")
+        rc, out, err = self.libcmd("market-add", "--url", url2, "--ref", "main")
+        res = json.loads(out)
+        self.assertFalse(res["ok"])
+        self.assertIn("--id", res["message"])
+        # 기존 등록은 그대로 살아 있어야 한다
+        cat = json.loads(self.libcmd("catalog", "--limit", "-1")[1])
+        self.assertEqual([m["name"] for m in cat["marketplaces"]], ["testmarket"])
+
     def test_summary_lists_markets_and_respects_filters(self):
         """UI 는 마켓별 구획을 그리려고 행보다 마켓 목록을 먼저 받는다(limit<0 = 요약 전용).
 
@@ -1025,8 +1066,13 @@ class MarketAdd(unittest.TestCase):
         mk = res["marketplaces"][0]
         self.assertEqual((mk["id"], mk["name"], mk["url"], mk["total"]), ("mk", "testmarket", self.url, 2))
 
+        self.assertEqual(mk["total_all"], 2)
+
         res = json.loads(self.libcmd("catalog", "--limit", "-1", "--category", "database")[1])
         self.assertEqual(res["marketplaces"][0]["total"], 1)   # 필터가 마켓별 개수에도 반영된다
+        # total_all 은 필터 전 개수 - UI 가 "1 / 2" 로 필터가 걸려 있음을 드러내는 근거다.
+        self.assertEqual(res["marketplaces"][0]["total_all"], 2)
+        self.assertEqual((res["total"], res["total_all"]), (1, 2))
 
     def test_marketplace_filter_pages_that_market_alone(self):
         # UI 의 마켓별 페이징 경로: --marketplace 로 좁히면 offset/limit 이 그 마켓에만 걸린다.
